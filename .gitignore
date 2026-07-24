@@ -22,3 +22,5 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+database/migrations/2026_*
+database/migrations/2019_*
