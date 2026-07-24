@@ -212,7 +212,7 @@ You are a code generator. Output ONLY this JSON structure with real code:
 }
 
 Replace xxx/Xxx with the actual feature name and fields.
-Always use http://localhost:8005 for API calls
+Always use https://generator-back-production.up.railway.app/api for API calls
 Always import CommonModule and add to imports array.
 Always include ReactiveFormsModule in imports array.
 Always add successMessage='' and items: any[] = [] properties.

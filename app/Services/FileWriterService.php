@@ -191,7 +191,7 @@ class FileWriterService
 
         if (!File::exists($envPath)) {
             $content  = 'export const environment = {' . PHP_EOL;
-            $content .= "  apiUrl: 'http://localhost:8005/api'" . PHP_EOL;
+          $content .= "  apiUrl: 'https://generator-back-production.up.railway.app/api'" . PHP_EOL;
             $content .= '};' . PHP_EOL;
             File::put($envPath, $content);
         }
