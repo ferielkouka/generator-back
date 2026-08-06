@@ -12,13 +12,13 @@ class GitHubWriterService
     private string $repo;
     private string $branch;
 
-    public function __construct()
-    {
-        $this->token = env('GITHUB_TOKEN');
-        $this->owner = env('GITHUB_REPO_OWNER');
-        $this->repo = env('GITHUB_REPO_NAME');
-        $this->branch = env('GITHUB_REPO_BRANCH', 'main');
-    }
+public function __construct()
+{
+    $this->token = config('services.github.token');
+    $this->owner = config('services.github.owner');
+    $this->repo = config('services.github.repo');
+    $this->branch = config('services.github.branch', 'main');
+}
 
     /**
      * Crée ou met à jour un fichier dans le repo GitHub.
