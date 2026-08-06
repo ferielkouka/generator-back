@@ -6,13 +6,15 @@ use Illuminate\Support\Facades\File;
 
 class FileWriterService
 {
-    private string $angularPath;
+    private string $angularPath;   // chemin RELATIF dans le repo GitHub (pas un chemin disque)
     private string $laravelPath;
+    private GitHubWriterService $github;
 
-    public function __construct()
+    public function __construct(GitHubWriterService $github)
     {
-        $this->angularPath = 'C:/Users/lenovo/generated-app/src/app';
+        $this->angularPath = 'src/app';
         $this->laravelPath = base_path();
+        $this->github = $github;
     }
 
     public function write(array $generated): array
@@ -27,8 +29,6 @@ class FileWriterService
             $componentFolder = strtolower(str_replace('Component', '', $componentName));
             $componentDir = $this->angularPath . '/' . $componentFolder;
 
-            File::ensureDirectoryExists($componentDir);
-
             foreach ($generated['angular']['files'] as $filename => $code) {
                 if (str_ends_with($filename, '.ts')) {
                     $code = $this->cleanAngularCode($code);
@@ -40,7 +40,7 @@ class FileWriterService
                     $code = $this->fixArrayType($code);
                 }
                 $filePath = $componentDir . '/' . $filename;
-                File::put($filePath, $code);
+                $this->github->putFile($filePath, $code, "Add/update {$filename}");
                 $writtenFiles[] = $filePath;
             }
 
@@ -130,7 +130,6 @@ class FileWriterService
 
     private function fixCommonModule(string $code): string
     {
-        // Ajouter import CommonModule si utilisé mais pas importé
         if (str_contains($code, 'CommonModule') && !str_contains($code, "from '@angular/common'")) {
             $code = str_replace(
                 "import { Component",
@@ -139,7 +138,6 @@ class FileWriterService
             );
         }
 
-        // Ajouter import ReactiveFormsModule si utilisé mais pas importé
         if (str_contains($code, 'ReactiveFormsModule') && !str_contains($code, "from '@angular/forms'")) {
             $code = str_replace(
                 "import { Component",
@@ -148,7 +146,6 @@ class FileWriterService
             );
         }
 
-        // Ajouter CommonModule dans imports array si pas présent
         if (!str_contains($code, 'CommonModule') && !str_contains($code, "from '@angular/common'")) {
             $code = str_replace(
                 "import { Component",
@@ -187,13 +184,13 @@ class FileWriterService
 
     private function fixEnvironment(): void
     {
-        $envPath = 'C:/Users/lenovo/generated-app/src/environment.ts';
+        $envPath = 'src/environment.ts';
 
-        if (!File::exists($envPath)) {
+        if (!$this->github->fileExists($envPath)) {
             $content  = 'export const environment = {' . PHP_EOL;
-          $content .= "  apiUrl: 'https://generator-back-production.up.railway.app/api'" . PHP_EOL;
+            $content .= "  apiUrl: 'https://generator-back-production.up.railway.app/api'" . PHP_EOL;
             $content .= '};' . PHP_EOL;
-            File::put($envPath, $content);
+            $this->github->putFile($envPath, $content, 'Create environment.ts');
         }
     }
 
@@ -224,24 +221,29 @@ class FileWriterService
         \Log::info("Controller écrasé: {$controllerPath}");
     }
 
+    /**
+     * Lit les fichiers existants du repo GitHub (au lieu du disque).
+     */
     public function readExistingFiles(string $feature = ''): string
     {
         $result = '';
-        $appPath = $this->angularPath;
+        $items = $this->github->listDirectory($this->angularPath);
 
-        if (!File::exists($appPath)) return '';
+        foreach ($items as $item) {
+            if (($item['type'] ?? '') !== 'dir') continue;
 
-        $folders = File::directories($appPath);
-        foreach ($folders as $folder) {
-            $folderName = basename($folder);
+            $folderName = $item['name'];
             if (in_array($folderName, ['app', 'assets', 'environments'])) continue;
             if (!empty($feature) && $folderName !== strtolower($feature)) continue;
 
-            $files = File::files($folder);
+            $files = $this->github->listDirectory($this->angularPath . '/' . $folderName);
             foreach ($files as $file) {
-                $relativePath = $folderName . '/' . $file->getFilename();
-                $content = File::get($file->getPathname());
-                $result .= "\n--- {$relativePath} ---\n{$content}\n";
+                if (($file['type'] ?? '') !== 'file') continue;
+                $relativePath = $folderName . '/' . $file['name'];
+                $content = $this->github->getFile($this->angularPath . '/' . $folderName . '/' . $file['name']);
+                if ($content !== null) {
+                    $result .= "\n--- {$relativePath} ---\n{$content}\n";
+                }
             }
         }
 
@@ -252,7 +254,7 @@ class FileWriterService
     {
         $route = ltrim($generated['angular']['route'] ?? $componentFolder, '/');
         $routesPath = $this->angularPath . '/app.routes.ts';
-        $existingContent = File::exists($routesPath) ? File::get($routesPath) : '';
+        $existingContent = $this->github->getFile($routesPath) ?? '';
 
         if (str_contains($existingContent, "path: '{$route}'")) {
             return;
@@ -265,7 +267,7 @@ class FileWriterService
             $content .= "  { path: '', redirectTo: '/{$route}', pathMatch: 'full' }," . PHP_EOL;
             $content .= "  { path: '{$route}', component: {$componentName} }" . PHP_EOL;
             $content .= "];" . PHP_EOL;
-            File::put($routesPath, $content);
+            $this->github->putFile($routesPath, $content, "Create app.routes.ts");
             return;
         }
 
@@ -278,7 +280,6 @@ class FileWriterService
             );
         }
 
-        // Seulement dashboard et admin nécessitent authGuard
         $protectedRoutes = ['dashboard', 'admin'];
         $needsGuard = in_array($route, $protectedRoutes);
 
@@ -300,7 +301,7 @@ class FileWriterService
             $existingContent
         );
 
-        File::put($routesPath, $existingContent);
+        $this->github->putFile($routesPath, $existingContent, "Add route {$route}");
     }
 
     private function addLaravelRoute(string $newRoute): void
@@ -432,7 +433,7 @@ class FileWriterService
 
     private function fixAppConfig(): void
     {
-        $configPath = 'C:/Users/lenovo/generated-app/src/app/app.config.ts';
+        $configPath = 'src/app/app.config.ts';
 
         $config = <<<'TS'
 import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
@@ -460,7 +461,7 @@ export const appConfig: ApplicationConfig = {
 };
 TS;
 
-        File::put($configPath, $config);
+        $this->github->putFile($configPath, $config, 'Update app.config.ts');
     }
 
     private function cleanAngularCode(string $code): string
