@@ -250,6 +250,24 @@ class FileWriterService
         return $result;
     }
 
+    /**
+     * Liste les noms des dossiers de composants existants dans generated-app.
+     */
+    public function listGeneratedFolders(): array
+    {
+        $items = $this->github->listDirectory($this->angularPath);
+        $folders = [];
+
+        foreach ($items as $item) {
+            if (($item['type'] ?? '') !== 'dir') continue;
+            $folderName = $item['name'];
+            if (in_array($folderName, ['app', 'assets', 'environments'])) continue;
+            $folders[] = $folderName;
+        }
+
+        return $folders;
+    }
+
     private function addRoute(array $generated, string $componentName, string $componentFolder): void
     {
         $route = ltrim($generated['angular']['route'] ?? $componentFolder, '/');

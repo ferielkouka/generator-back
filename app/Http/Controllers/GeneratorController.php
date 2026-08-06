@@ -17,10 +17,10 @@ class GeneratorController extends Controller
     private FileWriterService $fileWriter;
     private ProjectLauncherService $launcher;
 
-    public function __construct()
+    public function __construct(FileWriterService $fileWriter, ProjectLauncherService $launcher)
     {
-        $this->fileWriter = new FileWriterService();
-        $this->launcher = new ProjectLauncherService();
+        $this->fileWriter = $fileWriter;
+        $this->launcher = $launcher;
     }
 
     public function generate(Request $request)
@@ -145,7 +145,7 @@ class GeneratorController extends Controller
                 \Log::error('Schema error: ' . $e->getMessage());
             }
         }
-        
+
         return response()->json([
             'success'       => true,
             'feature'       => $generated['feature'] ?? 'unknown',
@@ -158,31 +158,15 @@ class GeneratorController extends Controller
     private function detectFeature(string $message): string
     {
         $message = strtolower($message);
-        $appPath = 'C:/Users/lenovo/generated-app/src/app';
+        $items = $this->fileWriter->listGeneratedFolders();
 
-        if (!File::exists($appPath)) return '';
-
-        $folders = File::directories($appPath);
-
-        foreach ($folders as $folder) {
-            $folderName = basename($folder);
-            if (in_array($folderName, ['app', 'assets', 'environments'])) continue;
+        foreach ($items as $folderName) {
             if (str_contains($message, $folderName)) {
                 return $folderName;
             }
         }
 
-        $folders = array_filter(
-            $folders,
-            fn($f) => !in_array(basename($f), ['app', 'assets', 'environments'])
-        );
-
-        if (!empty($folders)) {
-            usort($folders, fn($a, $b) => filemtime($b) - filemtime($a));
-            return basename($folders[0]);
-        }
-
-        return '';
+        return $items[0] ?? '';
     }
 
     private function getSystemPrompt(): string
