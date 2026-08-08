@@ -35,6 +35,7 @@ class FileWriterService
                     $code = $this->fixAngularImports($code);
                     $code = $this->fixAngularComponent($code);
                     $code = $this->fixApiUrl($code);
+                    $code = $this->fixDuplicateApiPath($code);
                     $code = $this->fixSuccessMessage($code);
                     $code = $this->fixCommonModule($code);
                     $code = $this->fixArrayType($code);
@@ -273,6 +274,15 @@ class FileWriterService
         }
 
         return $code;
+    }
+
+    /**
+     * Retire les doublons '/api/api/' causés par Groq qui ajoute parfois /api
+     * en plus de environment.apiUrl qui le contient déjà.
+     */
+    private function fixDuplicateApiPath(string $code): string
+    {
+        return str_replace("environment.apiUrl + '/api/", "environment.apiUrl + '/", $code);
     }
 
     private function mergeController(string $controllerPath, string $newCode): void
