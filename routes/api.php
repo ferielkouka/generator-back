@@ -67,3 +67,6 @@ Route::get('/contacts-count',[DashboardController::class,'contactsCount']);
 Route::get('/statistiques',[StatistiquesController::class,'index']);
 Route::post('/livre',[LivreController::class,'store']);
 Route::get('/livre',[LivreController::class,'index']);
+
+Route::get('/profil', [ProfilController::class, 'index']);
+Route::put('/profil', [ProfilController::class, 'update']);

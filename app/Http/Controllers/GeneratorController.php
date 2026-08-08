@@ -59,7 +59,7 @@ class GeneratorController extends Controller
                 ['role' => 'system', 'content' => $systemPrompt],
                 ['role' => 'user', 'content' => $userMessage],
             ],
-            'max_tokens'      => 4000,
+            'max_tokens'      => 8000,
             'response_format' => ['type' => 'json_object'],
         ]);
 
