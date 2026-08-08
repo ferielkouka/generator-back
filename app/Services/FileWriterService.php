@@ -38,6 +38,7 @@ class FileWriterService
                     $code = $this->fixSuccessMessage($code);
                     $code = $this->fixCommonModule($code);
                     $code = $this->fixArrayType($code);
+                    $code = $this->balanceBraces($code);
                 }
                 $filePath = $componentDir . '/' . $filename;
                 $this->github->putFile($filePath, $code, "Add/update {$filename}");
@@ -125,6 +126,23 @@ class FileWriterService
             '$1$2: any[] = [];',
             $code
         );
+        return $code;
+    }
+
+    /**
+     * Ajoute les accolades fermantes manquantes en fin de fichier (garde-fou basique).
+     */
+    private function balanceBraces(string $code): string
+    {
+        $openCount = substr_count($code, '{');
+        $closeCount = substr_count($code, '}');
+
+        if ($openCount > $closeCount) {
+            $missing = $openCount - $closeCount;
+            \Log::warning("Fichier TS déséquilibré : {$missing} accolade(s) manquante(s), correction automatique appliquée.");
+            $code = rtrim($code) . PHP_EOL . str_repeat('}', $missing) . PHP_EOL;
+        }
+
         return $code;
     }
 
