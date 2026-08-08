@@ -17,6 +17,7 @@ use App\Http\Controllers\TasksController;
 use App\Http\Controllers\ContactsController;
 use App\Http\Controllers\BlogController;
 use App\Http\Controllers\ProductController;
+use App\Http\Controllers\ProfilController;
 
 Route::post('/generate', [GeneratorController::class, 'generate']);
 Route::get('/projects', [ProjectController::class, 'index']);
