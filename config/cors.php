@@ -26,7 +26,7 @@ return [
     'http://localhost:4201',
 ],
 'allowed_origins_patterns' => [
-    '#^https://generator-front(-[a-z0-9]+)?\.vercel\.app$#',
+    '#^https://generator-front(-[a-z0-9]+)?(-ferieelkoukaa-7112s-projects)?\.vercel\.app$#',
 ],
     'allowed_headers' => ['*'],
 
