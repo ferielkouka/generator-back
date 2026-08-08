@@ -27,6 +27,7 @@ return [
 ],
 'allowed_origins_patterns' => [
     '#^https://generator-front(-[a-z0-9]+)?(-ferieelkoukaa-7112s-projects)?\.vercel\.app$#',
+    '#^https://generated-app(-[a-z0-9]+)?(-ferieelkoukaa-7112s-projects)?\.vercel\.app$#',
 ],
     'allowed_headers' => ['*'],
 

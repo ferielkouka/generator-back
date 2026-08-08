@@ -38,6 +38,7 @@ class FileWriterService
                     $code = $this->fixSuccessMessage($code);
                     $code = $this->fixCommonModule($code);
                     $code = $this->fixArrayType($code);
+                    $code = $this->ensureRequiredImports($code);
                     $code = $this->balanceBraces($code);
                 }
                 $filePath = $componentDir . '/' . $filename;
@@ -45,10 +46,9 @@ class FileWriterService
                 $writtenFiles[] = $filePath;
             }
 
-            if ($action === 'create') {
-                $this->addRoute($generated, $componentName, $componentFolder);
-                $writtenFiles[] = $this->angularPath . '/app.routes.ts';
-            }
+            // Toujours vérifier/ajouter la route, peu importe si action = create ou update
+            $this->addRoute($generated, $componentName, $componentFolder);
+            $writtenFiles[] = $this->angularPath . '/app.routes.ts';
 
             $this->fixAppConfig();
         }
@@ -141,6 +141,48 @@ class FileWriterService
             $missing = $openCount - $closeCount;
             \Log::warning("Fichier TS déséquilibré : {$missing} accolade(s) manquante(s), correction automatique appliquée.");
             $code = rtrim($code) . PHP_EOL . str_repeat('}', $missing) . PHP_EOL;
+        }
+
+        return $code;
+    }
+
+    /**
+     * Vérifie que tous les symboles Angular utilisés (ReactiveFormsModule, FormsModule, etc.)
+     * ont bien leur import correspondant, peu importe où ils sont référencés dans le fichier.
+     */
+    private function ensureRequiredImports(string $code): string
+    {
+        $knownImports = [
+            'ReactiveFormsModule' => "@angular/forms",
+            'FormsModule'         => "@angular/forms",
+            'FormGroup'           => "@angular/forms",
+            'FormControl'         => "@angular/forms",
+            'Validators'          => "@angular/forms",
+            'CommonModule'        => "@angular/common",
+            'HttpClient'          => "@angular/common/http",
+            'Router'              => "@angular/router",
+            'RouterModule'        => "@angular/router",
+        ];
+
+        $byModule = [];
+
+        foreach ($knownImports as $symbol => $module) {
+            $isUsed = preg_match('/\b' . preg_quote($symbol, '/') . '\b/', $code);
+            $isImported = preg_match('/import\s*\{[^}]*\b' . preg_quote($symbol, '/') . '\b[^}]*\}\s*from\s*[\'"]' . preg_quote($module, '/') . '[\'"]/', $code);
+
+            if ($isUsed && !$isImported) {
+                $byModule[$module][] = $symbol;
+            }
+        }
+
+        if (!empty($byModule)) {
+            $newImportLines = '';
+            foreach ($byModule as $module => $symbols) {
+                $unique = array_unique($symbols);
+                $newImportLines .= "import { " . implode(', ', $unique) . " } from '{$module}';" . PHP_EOL;
+            }
+            $code = $newImportLines . $code;
+            \Log::warning("Imports manquants ajoutés automatiquement: " . json_encode($byModule));
         }
 
         return $code;
