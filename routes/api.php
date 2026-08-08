@@ -68,5 +68,5 @@ Route::get('/statistiques',[StatistiquesController::class,'index']);
 Route::post('/livre',[LivreController::class,'store']);
 Route::get('/livre',[LivreController::class,'index']);
 
-Route::get('/profil', [ProfilController::class, 'index']);
-Route::put('/profil', [ProfilController::class, 'update']);
+Route::get('/profil', [ProfilController::class, 'getUser']);
+Route::put('/profil', [ProfilController::class, 'updateUser']);
