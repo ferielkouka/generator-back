@@ -32,6 +32,7 @@ class FileWriterService
             foreach ($generated['angular']['files'] as $filename => $code) {
                 if (str_ends_with($filename, '.ts')) {
                     $code = $this->cleanAngularCode($code);
+                    $code = $this->enforceComponentNameConsistency($code, $componentName, $componentFolder);
                     $code = $this->fixAngularImports($code);
                     $code = $this->fixAngularComponent($code);
                     $code = $this->fixApiUrl($code);
@@ -127,6 +128,57 @@ class FileWriterService
             '$1$2: any[] = [];',
             $code
         );
+        return $code;
+    }
+
+    /**
+     * Force la cohérence entre le nom du composant attendu (déterminé par le dossier créé)
+     * et ce que le code TS contient réellement (classe, templateUrl, styleUrls, selector).
+     * Corrige le cas où Groq déclare "component_name": "XxxComponent" mais écrit un code
+     * qui utilise en interne un autre nom (ex: AproposComponent au lieu de NewsletterComponent).
+     */
+    private function enforceComponentNameConsistency(string $code, string $expectedComponentName, string $componentFolder): string
+    {
+        // Ne s'applique qu'aux fichiers qui définissent une classe de composant (@Component)
+        if (!str_contains($code, '@Component')) {
+            return $code;
+        }
+
+        // Trouver le vrai nom de classe utilisé dans le fichier
+        if (!preg_match('/export\s+class\s+(\w+)/', $code, $matches)) {
+            return $code;
+        }
+
+        $actualClassName = $matches[1];
+
+        if ($actualClassName === $expectedComponentName) {
+            return $code;
+        }
+
+        \Log::warning("Incohérence de nom de composant détectée: '{$actualClassName}' remplacé par '{$expectedComponentName}'.");
+
+        // Remplacer toutes les occurrences du mauvais nom de classe par le bon
+        $code = preg_replace('/\b' . preg_quote($actualClassName, '/') . '\b/', $expectedComponentName, $code);
+
+        // Corriger templateUrl et styleUrls pour pointer vers le bon nom de fichier
+        $code = preg_replace(
+            '/templateUrl\s*:\s*[\'"]\.\/[\w.-]+\.component\.html[\'"]/',
+            "templateUrl: './{$componentFolder}.component.html'",
+            $code
+        );
+        $code = preg_replace(
+            '/styleUrls\s*:\s*\[\s*[\'"]\.\/[\w.-]+\.component\.css[\'"]\s*\]/',
+            "styleUrls: ['./{$componentFolder}.component.css']",
+            $code
+        );
+
+        // Corriger le selector pour rester cohérent avec le dossier
+        $code = preg_replace(
+            '/selector\s*:\s*[\'"]app-[\w-]+[\'"]/',
+            "selector: 'app-{$componentFolder}'",
+            $code
+        );
+
         return $code;
     }
 
