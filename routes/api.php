@@ -17,6 +17,7 @@ use App\Http\Controllers\TasksController;
 use App\Http\Controllers\ContactsController;
 use App\Http\Controllers\BlogController;
 use App\Http\Controllers\ProductController;
+use App\Http\Controllers\ProfilController;
 
 Route::post('/generate', [GeneratorController::class, 'generate']);
 Route::get('/projects', [ProjectController::class, 'index']);
@@ -68,5 +69,5 @@ Route::get('/statistiques',[StatistiquesController::class,'index']);
 Route::post('/livre',[LivreController::class,'store']);
 Route::get('/livre',[LivreController::class,'index']);
 
-Route::get('/profil', [ProfilController::class, 'index']);
-Route::put('/profil', [ProfilController::class, 'update']);
+Route::get('/profil', [ProfilController::class, 'getUser']);
+Route::put('/profil', [ProfilController::class, 'updateUser']);
