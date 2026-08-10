@@ -50,58 +50,88 @@ class GeneratorController extends Controller
 
         $systemPrompt = $this->getSystemPrompt();
 
-        $response = \Illuminate\Support\Facades\Http::timeout(60)->withHeaders([
-            'Authorization' => 'Bearer ' . config('services.groq.key'),
-            'Content-Type'  => 'application/json',
-        ])->post('https://api.groq.com/openai/v1/chat/completions', [
-            'model'           => 'llama-3.3-70b-versatile',
-            'messages'        => [
-                ['role' => 'system', 'content' => $systemPrompt],
-                ['role' => 'user', 'content' => $userMessage],
-            ],
-            'max_tokens'      => 8000,
-            'response_format' => ['type' => 'json_object'],
-        ]);
+        $maxRetries = 2;
+        $generated = null;
+        $rawJson = null;
 
-        \Log::info('Groq response status: ' . $response->status());
+        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
 
-        if ($response->status() === 429) {
-            return response()->json(['error' => 'Quota IA dépassé, réessaie dans quelques secondes.'], 429);
-        }
+            $currentUserMessage = $userMessage;
+            if ($attempt > 1) {
+                $currentUserMessage .= "\n\nIMPORTANT: Ta réponse précédente ne contenait pas la section \"laravel\" complète (controller, model, migration, routes). Tu DOIS impérativement inclure cette section cette fois-ci, en plus du code Angular.";
+            }
 
-        if (!$response->successful()) {
-            \Log::error('Groq error body: ' . $response->body());
-            return response()->json(['error' => 'Erreur API Groq: ' . $response->status()], 502);
-        }
+            $response = \Illuminate\Support\Facades\Http::timeout(60)->withHeaders([
+                'Authorization' => 'Bearer ' . config('services.groq.key'),
+                'Content-Type'  => 'application/json',
+            ])->post('https://api.groq.com/openai/v1/chat/completions', [
+                'model'           => 'llama-3.3-70b-versatile',
+                'messages'        => [
+                    ['role' => 'system', 'content' => $systemPrompt],
+                    ['role' => 'user', 'content' => $currentUserMessage],
+                ],
+                'max_tokens'      => 8000,
+                'response_format' => ['type' => 'json_object'],
+            ]);
 
-        $rawJson = $response->json('choices.0.message.content');
-        \Log::info('Raw JSON: ' . $rawJson);
+            \Log::info("Groq response status (tentative {$attempt}): " . $response->status());
 
-        $generated = json_decode($rawJson, true);
+            if ($response->status() === 429) {
+                return response()->json(['error' => 'Quota IA dépassé, réessaie dans quelques secondes.'], 429);
+            }
 
-        if (!$generated) {
-            \Log::error('JSON parse error: ' . json_last_error_msg());
-            return response()->json([
-                'error' => 'Réponse IA invalide: ' . json_last_error_msg(),
-                'raw'   => substr($rawJson, 0, 500)
-            ], 422);
-        }
+            if (!$response->successful()) {
+                \Log::error("Groq error body (tentative {$attempt}): " . $response->body());
+                if ($attempt === $maxRetries) {
+                    return response()->json(['error' => 'Erreur API Groq: ' . $response->status()], 502);
+                }
+                continue;
+            }
 
-        if (isset($generated['angular.files'])) {
-            $generated['angular'] = [
-                'component_name' => $generated['angular.component_name'] ?? '',
-                'route'          => $generated['angular.route'] ?? '/',
-                'files'          => $generated['angular.files'] ?? [],
-            ];
-        }
+            $rawJson = $response->json('choices.0.message.content');
+            \Log::info("Raw JSON (tentative {$attempt}): " . $rawJson);
 
-        if (isset($generated['laravel.controller'])) {
-            $generated['laravel'] = [
-                'controller' => $generated['laravel.controller'] ?? [],
-                'model'      => $generated['laravel.model'] ?? [],
-                'migration'  => $generated['laravel.migration'] ?? [],
-                'routes'     => $generated['laravel.routes'] ?? '',
-            ];
+            $parsed = json_decode($rawJson, true);
+
+            if (!$parsed) {
+                \Log::error("JSON parse error (tentative {$attempt}): " . json_last_error_msg());
+                if ($attempt === $maxRetries) {
+                    return response()->json([
+                        'error' => 'Réponse IA invalide: ' . json_last_error_msg(),
+                        'raw'   => substr($rawJson, 0, 500)
+                    ], 422);
+                }
+                continue;
+            }
+
+            $generated = $parsed;
+
+            // Normaliser les clés à points AVANT de vérifier si la section laravel est complète
+            if (isset($generated['angular.files'])) {
+                $generated['angular'] = [
+                    'component_name' => $generated['angular.component_name'] ?? '',
+                    'route'          => $generated['angular.route'] ?? '/',
+                    'files'          => $generated['angular.files'] ?? [],
+                ];
+            }
+
+            if (isset($generated['laravel.controller'])) {
+                $generated['laravel'] = [
+                    'controller' => $generated['laravel.controller'] ?? [],
+                    'model'      => $generated['laravel.model'] ?? [],
+                    'migration'  => $generated['laravel.migration'] ?? [],
+                    'routes'     => $generated['laravel.routes'] ?? '',
+                ];
+            }
+
+            $hasLaravel = !empty($generated['laravel']['controller']);
+
+            if ($hasLaravel) {
+                \Log::info("Section Laravel présente dès la tentative {$attempt}.");
+                break;
+            }
+
+            \Log::warning("Section Laravel manquante à la tentative {$attempt}, " . ($attempt < $maxRetries ? 'nouvelle tentative...' : 'abandon après max de tentatives.'));
         }
 
         if (empty($generated['angular']['files'])) {
