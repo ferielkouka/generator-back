@@ -471,6 +471,11 @@ class FileWriterService
 
         $existingRoutes .= PHP_EOL . $cleanRoute;
         File::put($routesPath, $existingRoutes);
+
+        // Vider et reconstruire le cache des routes pour que la nouvelle route soit prise en compte immédiatement
+        \Artisan::call('route:clear');
+        \Artisan::call('route:cache');
+        \Log::info('Cache des routes régénéré après ajout de nouvelle route.');
     }
 
     private function patchUserModel(): void
