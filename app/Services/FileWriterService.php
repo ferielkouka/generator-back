@@ -471,12 +471,58 @@ class FileWriterService
     }
 private function addLaravelRoute(string $newRoutes): void
 {
-    // Découper en lignes individuelles, au cas où plusieurs routes sont fournies d'un coup
     $lines = array_filter(array_map('trim', explode("\n", $newRoutes)));
 
+    $anyAdded = false;
     foreach ($lines as $line) {
-        $this->addSingleLaravelRoute($line);
+        $added = $this->addSingleLaravelRoute($line);
+        if ($added) {
+            $anyAdded = true;
+        }
     }
+
+    if ($anyAdded) {
+        \Artisan::call('route:clear');
+        \Artisan::call('route:cache');
+        \Log::info('Cache des routes régénéré après ajout de ' . count($lines) . ' route(s).');
+    }
+}
+
+private function addSingleLaravelRoute(string $newRoute): bool
+{
+    $routesPath = base_path('routes/api.php');
+    $existingRoutes = File::get($routesPath);
+
+    $cleanRoute = preg_replace("/Route::(\w+)\('\/api\//", "Route::$1('/", $newRoute);
+
+    preg_match("/Route::(\w+)\('([^']+)'/", $cleanRoute, $matches);
+    $httpMethod = $matches[1] ?? '';
+    $routePath = $matches[2] ?? '';
+
+    // Vérifie la présence de CETTE méthode HTTP + ce chemin précis (pas juste le chemin seul,
+    // pour éviter de bloquer l'ajout de DELETE si GET/POST sur le même chemin existent déjà)
+    $routeSignature = "Route::{$httpMethod}('{$routePath}'";
+    if (!empty($routePath) && str_contains($existingRoutes, $routeSignature)) {
+        \Log::info("Route déjà existante, ignorée: {$cleanRoute}");
+        return false;
+    }
+
+    preg_match('/\[(\w+)::class/', $cleanRoute, $controllerMatches);
+    $controllerName = $controllerMatches[1] ?? '';
+
+    if (!empty($controllerName) && !str_contains($existingRoutes, "use App\\Http\\Controllers\\{$controllerName}")) {
+        $existingRoutes = str_replace(
+            "use App\\Http\\Controllers\\AuthController;",
+            "use App\\Http\\Controllers\\AuthController;" . PHP_EOL . "use App\\Http\\Controllers\\{$controllerName};",
+            $existingRoutes
+        );
+    }
+
+    $existingRoutes .= PHP_EOL . $cleanRoute;
+    File::put($routesPath, $existingRoutes);
+
+    \Log::info("Route ajoutée: {$cleanRoute}");
+    return true;
 }
 
 private function addSingleLaravelRoute(string $newRoute): void
