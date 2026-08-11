@@ -29,6 +29,8 @@ class FileWriterService
             $componentFolder = strtolower(str_replace('Component', '', $componentName));
             $componentDir = $this->angularPath . '/' . $componentFolder;
 
+            $filesToCommit = [];
+
             foreach ($generated['angular']['files'] as $filename => $code) {
                 if (str_ends_with($filename, '.ts')) {
                     $code = $this->cleanAngularCode($code);
@@ -45,15 +47,23 @@ class FileWriterService
                     $code = $this->balanceBraces($code);
                 }
                 $filePath = $componentDir . '/' . $filename;
-                $this->github->putFile($filePath, $code, "Add/update {$filename}");
+                $filesToCommit[$filePath] = $code;
                 $writtenFiles[] = $filePath;
             }
 
-            // Toujours vérifier/ajouter la route, peu importe si action = create ou update
-            $this->addRoute($generated, $componentName, $componentFolder);
-            $writtenFiles[] = $this->angularPath . '/app.routes.ts';
+            // Préparer app.config.ts dans le même commit groupé
+            $filesToCommit[$this->angularPath . '/app.config.ts'] = $this->getAppConfigContent();
+            $writtenFiles[] = $this->angularPath . '/app.config.ts';
 
-            $this->fixAppConfig();
+            // Préparer app.routes.ts dans le même commit groupé (toujours vérifié, create ou update)
+            $updatedRoutes = $this->buildUpdatedRoutes($generated, $componentName, $componentFolder);
+            if ($updatedRoutes !== null) {
+                $filesToCommit[$this->angularPath . '/app.routes.ts'] = $updatedRoutes;
+                $writtenFiles[] = $this->angularPath . '/app.routes.ts';
+            }
+
+            // UN SEUL commit atomique pour tous les fichiers du composant + routes + config
+            $this->github->putFiles($filesToCommit, "Generate/update {$componentFolder} component");
         }
 
         if (isset($generated['laravel']['controller'])) {
@@ -135,17 +145,13 @@ class FileWriterService
     /**
      * Force la cohérence entre le nom du composant attendu (déterminé par le dossier créé)
      * et ce que le code TS contient réellement (classe, templateUrl, styleUrls, selector).
-     * Corrige le cas où Groq déclare "component_name": "XxxComponent" mais écrit un code
-     * qui utilise en interne un autre nom (ex: AproposComponent au lieu de NewsletterComponent).
      */
     private function enforceComponentNameConsistency(string $code, string $expectedComponentName, string $componentFolder): string
     {
-        // Ne s'applique qu'aux fichiers qui définissent une classe de composant (@Component)
         if (!str_contains($code, '@Component')) {
             return $code;
         }
 
-        // Trouver le vrai nom de classe utilisé dans le fichier
         if (!preg_match('/export\s+class\s+(\w+)/', $code, $matches)) {
             return $code;
         }
@@ -158,10 +164,8 @@ class FileWriterService
 
         \Log::warning("Incohérence de nom de composant détectée: '{$actualClassName}' remplacé par '{$expectedComponentName}'.");
 
-        // Remplacer toutes les occurrences du mauvais nom de classe par le bon
         $code = preg_replace('/\b' . preg_quote($actualClassName, '/') . '\b/', $expectedComponentName, $code);
 
-        // Corriger templateUrl et styleUrls pour pointer vers le bon nom de fichier
         $code = preg_replace(
             '/templateUrl\s*:\s*[\'"]\.\/[\w.-]+\.component\.html[\'"]/',
             "templateUrl: './{$componentFolder}.component.html'",
@@ -173,7 +177,6 @@ class FileWriterService
             $code
         );
 
-        // Corriger le selector pour rester cohérent avec le dossier
         $code = preg_replace(
             '/selector\s*:\s*[\'"]app-[\w-]+[\'"]/',
             "selector: 'app-{$componentFolder}'",
@@ -186,10 +189,6 @@ class FileWriterService
     /**
      * Corrige les opérations arithmétiques utilisant .value avec optional chaining (?.value),
      * qui provoquent des erreurs TypeScript (TS2533/TS2363) car la valeur peut être null/undefined.
-     * Transforme les patterns du type:
-     *   x.get('a')?.value * y.get('b')?.value
-     * en:
-     *   Number(x.get('a')?.value) * Number(y.get('b')?.value)
      */
     private function fixOptionalValueArithmetic(string $code): string
     {
@@ -414,14 +413,18 @@ class FileWriterService
         return $folders;
     }
 
-    private function addRoute(array $generated, string $componentName, string $componentFolder): void
+    /**
+     * Construit le contenu mis à jour de app.routes.ts, sans l'écrire directement.
+     * Retourne null si aucune modification n'est nécessaire (route déjà présente).
+     */
+    private function buildUpdatedRoutes(array $generated, string $componentName, string $componentFolder): ?string
     {
         $route = ltrim($generated['angular']['route'] ?? $componentFolder, '/');
         $routesPath = $this->angularPath . '/app.routes.ts';
         $existingContent = $this->github->getFile($routesPath) ?? '';
 
         if (str_contains($existingContent, "path: '{$route}'")) {
-            return;
+            return null;
         }
 
         if (empty(trim($existingContent))) {
@@ -431,8 +434,7 @@ class FileWriterService
             $content .= "  { path: '', redirectTo: '/{$route}', pathMatch: 'full' }," . PHP_EOL;
             $content .= "  { path: '{$route}', component: {$componentName} }" . PHP_EOL;
             $content .= "];" . PHP_EOL;
-            $this->github->putFile($routesPath, $content, "Create app.routes.ts");
-            return;
+            return $content;
         }
 
         $importLine = "import { {$componentName} } from './{$componentFolder}/{$componentFolder}.component';";
@@ -465,7 +467,7 @@ class FileWriterService
             $existingContent
         );
 
-        $this->github->putFile($routesPath, $existingContent, "Add route {$route}");
+        return $existingContent;
     }
 
     private function addLaravelRoute(string $newRoute): void
@@ -600,11 +602,9 @@ class FileWriterService
         return $code;
     }
 
-    private function fixAppConfig(): void
+    private function getAppConfigContent(): string
     {
-        $configPath = 'src/app/app.config.ts';
-
-        $config = <<<'TS'
+        return <<<'TS'
 import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { provideHttpClient, withInterceptors, HttpInterceptorFn } from '@angular/common/http';
@@ -629,8 +629,6 @@ export const appConfig: ApplicationConfig = {
   ]
 };
 TS;
-
-        $this->github->putFile($configPath, $config, 'Update app.config.ts');
     }
 
     private function cleanAngularCode(string $code): string
