@@ -43,6 +43,7 @@ class FileWriterService
                     $code = $this->fixCommonModule($code);
                     $code = $this->fixArrayType($code);
                     $code = $this->fixOptionalValueArithmetic($code);
+                    $code = $this->fixUpdateIdPattern($code);
                     $code = $this->ensureRequiredImports($code);
                     $code = $this->balanceBraces($code);
                 }
@@ -203,6 +204,55 @@ class FileWriterService
         }
 
         return $newCode;
+    }
+
+    /**
+     * Corrige le pattern défaillant où onUpdate() utilise this.form.get('id').value
+     * pour récupérer l'ID à mettre à jour, alors que le FormGroup ne contient pas
+     * de champ 'id' (car les champs id/created_at/updated_at sont exclus du form).
+     * Remplace par un pattern fiable utilisant une propriété selectedId séparée.
+     */
+    private function fixUpdateIdPattern(string $code): string
+    {
+        if (!str_contains($code, "this.form.get('id')")) {
+            return $code;
+        }
+
+        \Log::warning('Pattern défaillant form.get(id) détecté, correction automatique appliquée (ajout de selectedId).');
+
+        if (!str_contains($code, 'selectedId')) {
+            $code = preg_replace(
+                '/(items\s*:\s*any\[\]\s*=\s*\[\];)/',
+                "$1\n  selectedId: number | null = null;",
+                $code,
+                1
+            );
+        }
+
+        $code = preg_replace(
+            '/onUpdate\(item:\s*any\)\s*\{\s*this\.form\.patchValue\(item\);\s*\}/',
+            "onUpdate(item: any) {\n    this.selectedId = item.id;\n    this.form.patchValue(item);\n  }",
+            $code
+        );
+
+        $code = preg_replace(
+            "/this\.form\.get\('id'\)\?\.\?value/",
+            'this.selectedId',
+            $code
+        );
+        $code = preg_replace(
+            "/this\.form\.get\('id'\)\.value/",
+            'this.selectedId',
+            $code
+        );
+
+        $code = preg_replace(
+            '/(onUpdateSubmit\(\)\s*\{[^}]*next:\s*\([^)]*\)\s*=>\s*\{[^}]*)(this\.form\.reset\(\);)/s',
+            '$1$2' . PHP_EOL . '        this.selectedId = null;',
+            $code
+        );
+
+        return $code;
     }
 
     /**
@@ -469,63 +519,62 @@ class FileWriterService
 
         return $existingContent;
     }
-private function addLaravelRoute(string $newRoutes): void
-{
-    $lines = array_filter(array_map('trim', explode("\n", $newRoutes)));
 
-    $anyAdded = false;
-    foreach ($lines as $line) {
-        $added = $this->addSingleLaravelRoute($line);
-        if ($added) {
-            $anyAdded = true;
+    private function addLaravelRoute(string $newRoutes): void
+    {
+        $lines = array_filter(array_map('trim', explode("\n", $newRoutes)));
+
+        $anyAdded = false;
+        foreach ($lines as $line) {
+            $added = $this->addSingleLaravelRoute($line);
+            if ($added) {
+                $anyAdded = true;
+            }
+        }
+
+        if ($anyAdded) {
+            \Artisan::call('route:clear');
+            \Artisan::call('route:cache');
+            \Log::info('Cache des routes régénéré après ajout de ' . count($lines) . ' route(s).');
         }
     }
 
-    if ($anyAdded) {
-        \Artisan::call('route:clear');
-        \Artisan::call('route:cache');
-        \Log::info('Cache des routes régénéré après ajout de ' . count($lines) . ' route(s).');
+    private function addSingleLaravelRoute(string $newRoute): bool
+    {
+        $routesPath = base_path('routes/api.php');
+        $existingRoutes = File::get($routesPath);
+
+        $cleanRoute = preg_replace("/Route::(\w+)\('\/api\//", "Route::$1('/", $newRoute);
+
+        preg_match("/Route::(\w+)\('([^']+)'/", $cleanRoute, $matches);
+        $httpMethod = $matches[1] ?? '';
+        $routePath = $matches[2] ?? '';
+
+        // Vérifie la présence de CETTE méthode HTTP + ce chemin précis (pas juste le chemin seul,
+        // pour éviter de bloquer l'ajout de DELETE si GET/POST sur le même chemin existent déjà)
+        $routeSignature = "Route::{$httpMethod}('{$routePath}'";
+        if (!empty($routePath) && str_contains($existingRoutes, $routeSignature)) {
+            \Log::info("Route déjà existante, ignorée: {$cleanRoute}");
+            return false;
+        }
+
+        preg_match('/\[(\w+)::class/', $cleanRoute, $controllerMatches);
+        $controllerName = $controllerMatches[1] ?? '';
+
+        if (!empty($controllerName) && !str_contains($existingRoutes, "use App\\Http\\Controllers\\{$controllerName}")) {
+            $existingRoutes = str_replace(
+                "use App\\Http\\Controllers\\AuthController;",
+                "use App\\Http\\Controllers\\AuthController;" . PHP_EOL . "use App\\Http\\Controllers\\{$controllerName};",
+                $existingRoutes
+            );
+        }
+
+        $existingRoutes .= PHP_EOL . $cleanRoute;
+        File::put($routesPath, $existingRoutes);
+
+        \Log::info("Route ajoutée: {$cleanRoute}");
+        return true;
     }
-}
-
-private function addSingleLaravelRoute(string $newRoute): bool
-{
-    $routesPath = base_path('routes/api.php');
-    $existingRoutes = File::get($routesPath);
-
-    $cleanRoute = preg_replace("/Route::(\w+)\('\/api\//", "Route::$1('/", $newRoute);
-
-    preg_match("/Route::(\w+)\('([^']+)'/", $cleanRoute, $matches);
-    $httpMethod = $matches[1] ?? '';
-    $routePath = $matches[2] ?? '';
-
-    // Vérifie la présence de CETTE méthode HTTP + ce chemin précis (pas juste le chemin seul,
-    // pour éviter de bloquer l'ajout de DELETE si GET/POST sur le même chemin existent déjà)
-    $routeSignature = "Route::{$httpMethod}('{$routePath}'";
-    if (!empty($routePath) && str_contains($existingRoutes, $routeSignature)) {
-        \Log::info("Route déjà existante, ignorée: {$cleanRoute}");
-        return false;
-    }
-
-    preg_match('/\[(\w+)::class/', $cleanRoute, $controllerMatches);
-    $controllerName = $controllerMatches[1] ?? '';
-
-    if (!empty($controllerName) && !str_contains($existingRoutes, "use App\\Http\\Controllers\\{$controllerName}")) {
-        $existingRoutes = str_replace(
-            "use App\\Http\\Controllers\\AuthController;",
-            "use App\\Http\\Controllers\\AuthController;" . PHP_EOL . "use App\\Http\\Controllers\\{$controllerName};",
-            $existingRoutes
-        );
-    }
-
-    $existingRoutes .= PHP_EOL . $cleanRoute;
-    File::put($routesPath, $existingRoutes);
-
-    \Log::info("Route ajoutée: {$cleanRoute}");
-    return true;
-}
-
-
 
     private function patchUserModel(): void
     {
