@@ -40,6 +40,7 @@ class FileWriterService
                     $code = $this->fixSuccessMessage($code);
                     $code = $this->fixCommonModule($code);
                     $code = $this->fixArrayType($code);
+                    $code = $this->fixOptionalValueArithmetic($code);
                     $code = $this->ensureRequiredImports($code);
                     $code = $this->balanceBraces($code);
                 }
@@ -180,6 +181,29 @@ class FileWriterService
         );
 
         return $code;
+    }
+
+    /**
+     * Corrige les opérations arithmétiques utilisant .value avec optional chaining (?.value),
+     * qui provoquent des erreurs TypeScript (TS2533/TS2363) car la valeur peut être null/undefined.
+     * Transforme les patterns du type:
+     *   x.get('a')?.value * y.get('b')?.value
+     * en:
+     *   Number(x.get('a')?.value) * Number(y.get('b')?.value)
+     */
+    private function fixOptionalValueArithmetic(string $code): string
+    {
+        $pattern = '/(?<!Number\()(\bthis\.\w+\.get\([\'"]\w+[\'"]\)\?\.value)\b/';
+
+        $newCode = preg_replace_callback($pattern, function ($matches) {
+            return "Number({$matches[1]})";
+        }, $code);
+
+        if ($newCode !== $code) {
+            \Log::warning('Correctif appliqué: encapsulation Number() sur les valeurs ?.value utilisées dans des calculs.');
+        }
+
+        return $newCode;
     }
 
     /**
