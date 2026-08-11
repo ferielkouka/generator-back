@@ -525,38 +525,7 @@ private function addSingleLaravelRoute(string $newRoute): bool
     return true;
 }
 
-private function addSingleLaravelRoute(string $newRoute): void
-{
-    $routesPath = base_path('routes/api.php');
-    $existingRoutes = File::get($routesPath);
 
-    $cleanRoute = preg_replace("/Route::(\w+)\('\/api\//", "Route::$1('/", $newRoute);
-
-    preg_match("/Route::\w+\('([^']+)'/", $cleanRoute, $matches);
-    $routePath = $matches[1] ?? '';
-
-    if (!empty($routePath) && str_contains($existingRoutes, "'{$routePath}'")) {
-        return;
-    }
-
-    preg_match('/\[(\w+)::class/', $cleanRoute, $controllerMatches);
-    $controllerName = $controllerMatches[1] ?? '';
-
-    if (!empty($controllerName) && !str_contains($existingRoutes, "use App\\Http\\Controllers\\{$controllerName}")) {
-        $existingRoutes = str_replace(
-            "use App\\Http\\Controllers\\AuthController;",
-            "use App\\Http\\Controllers\\AuthController;" . PHP_EOL . "use App\\Http\\Controllers\\{$controllerName};",
-            $existingRoutes
-        );
-    }
-
-    $existingRoutes .= PHP_EOL . $cleanRoute;
-    File::put($routesPath, $existingRoutes);
-
-    \Artisan::call('route:clear');
-    \Artisan::call('route:cache');
-    \Log::info("Route ajoutée et cache régénéré: {$cleanRoute}");
-}
 
     private function patchUserModel(): void
     {
