@@ -46,6 +46,8 @@ class FileWriterService
                     $code = $this->fixUpdateIdPattern($code);
                     $code = $this->ensureRequiredImports($code);
                     $code = $this->balanceBraces($code);
+                } elseif (str_ends_with($filename, '.html')) {
+                    $code = $this->fixUpdateIdPatternHtml($code);
                 }
                 $filePath = $componentDir . '/' . $filename;
                 $filesToCommit[$filePath] = $code;
@@ -207,14 +209,13 @@ class FileWriterService
     }
 
     /**
-     * Corrige le pattern défaillant où onUpdate() utilise this.form.get('id').value
-     * pour récupérer l'ID à mettre à jour, alors que le FormGroup ne contient pas
-     * de champ 'id' (car les champs id/created_at/updated_at sont exclus du form).
-     * Remplace par un pattern fiable utilisant une propriété selectedId séparée.
+     * Corrige le pattern défaillant où la méthode d'édition (onUpdate/onEdit/etc.) utilise
+     * this.form.get('id').value pour récupérer l'ID, alors que le FormGroup ne contient
+     * pas de champ 'id'. Fonctionne peu importe le nom de la méthode utilisée par Groq.
      */
     private function fixUpdateIdPattern(string $code): string
     {
-        if (!str_contains($code, "this.form.get('id')")) {
+        if (!str_contains($code, "form.get('id')")) {
             return $code;
         }
 
@@ -229,28 +230,45 @@ class FileWriterService
             );
         }
 
-        $code = preg_replace(
-            '/onUpdate\(item:\s*any\)\s*\{\s*this\.form\.patchValue\(item\);\s*\}/',
-            "onUpdate(item: any) {\n    this.selectedId = item.id;\n    this.form.patchValue(item);\n  }",
+        // Trouve n'importe quelle méthode (onUpdate, onEdit, editItem, etc.) qui fait patchValue(item)
+        // et lui ajoute la mémorisation de l'ID
+        $code = preg_replace_callback(
+            '/(on\w+|edit\w+)\(item:\s*any\)\s*\{\s*this\.form\.patchValue\(item\);\s*\}/i',
+            function ($matches) {
+                return "{$matches[1]}(item: any) {\n    this.selectedId = item.id;\n    this.form.patchValue(item);\n  }";
+            },
             $code
         );
 
-        $code = preg_replace(
-            "/this\.form\.get\('id'\)\?\.\?value/",
-            'this.selectedId',
-            $code
-        );
-        $code = preg_replace(
-            "/this\.form\.get\('id'\)\.value/",
-            'this.selectedId',
-            $code
-        );
+        // Remplace toutes les utilisations de this.form.get('id')?.value ou .value par this.selectedId
+        $code = preg_replace("/this\.form\.get\('id'\)\?\.\?value/", 'this.selectedId', $code);
+        $code = preg_replace("/this\.form\.get\('id'\)\.value/", 'this.selectedId', $code);
+        $code = preg_replace("/Number\(this\.selectedId\)/", 'this.selectedId', $code);
 
+        // Réinitialise selectedId après une mise à jour réussie (dans n'importe quelle méthode de submit)
         $code = preg_replace(
-            '/(onUpdateSubmit\(\)\s*\{[^}]*next:\s*\([^)]*\)\s*=>\s*\{[^}]*)(this\.form\.reset\(\);)/s',
+            '/(next:\s*\([^)]*\)\s*=>\s*\{[^}]*)(this\.form\.reset\(\);)/s',
             '$1$2' . PHP_EOL . '        this.selectedId = null;',
             $code
         );
+
+        return $code;
+    }
+
+    /**
+     * Corrige le HTML : remplace la condition d'affichage du bouton "Modifier"
+     * qui se base sur form.get('id')?.value (toujours faux) par selectedId.
+     */
+    private function fixUpdateIdPatternHtml(string $code): string
+    {
+        if (!str_contains($code, "form.get('id')")) {
+            return $code;
+        }
+
+        \Log::warning('Correctif HTML appliqué: form.get(id) remplacé par selectedId.');
+
+        $code = preg_replace("/form\.get\('id'\)\?\.\?value/", 'selectedId', $code);
+        $code = preg_replace("/form\.get\('id'\)\.value/", 'selectedId', $code);
 
         return $code;
     }
@@ -390,6 +408,18 @@ class FileWriterService
             );
         }
 
+        // Corrige aussi les URLs Railway complètes codées en dur, pour toujours passer par environment.apiUrl
+        $code = preg_replace(
+            "/['\"]https:\/\/generator-back-production\.up\.railway\.app\/api\/([^'\"]+)['\"]/",
+            "environment.apiUrl + '/$1'",
+            $code
+        );
+        $code = preg_replace(
+            '/`https:\/\/generator-back-production\.up\.railway\.app\/api\/([^`]+)`/',
+            'environment.apiUrl + `/$1`',
+            $code
+        );
+
         if (str_contains($code, 'environment.apiUrl') && !str_contains($code, "from '../../environment'")) {
             $code = str_replace(
                 "import { Component",
@@ -522,6 +552,10 @@ class FileWriterService
 
     private function addLaravelRoute(string $newRoutes): void
     {
+        // Convertir les \n échappés littéralement (texte brut) en vrais retours à la ligne,
+        // au cas où Groq les envoie sous cette forme au lieu de vrais sauts de ligne.
+        $newRoutes = str_replace('\\n', "\n", $newRoutes);
+
         $lines = array_filter(array_map('trim', explode("\n", $newRoutes)));
 
         $anyAdded = false;
@@ -541,6 +575,12 @@ class FileWriterService
 
     private function addSingleLaravelRoute(string $newRoute): bool
     {
+        // Garde-fou supplémentaire: ignore toute ligne qui ne ressemble pas à une vraie déclaration de route
+        if (!preg_match('/^Route::\w+\(/', trim($newRoute))) {
+            \Log::warning("Ligne de route invalide ignorée: {$newRoute}");
+            return false;
+        }
+
         $routesPath = base_path('routes/api.php');
         $existingRoutes = File::get($routesPath);
 
@@ -550,8 +590,6 @@ class FileWriterService
         $httpMethod = $matches[1] ?? '';
         $routePath = $matches[2] ?? '';
 
-        // Vérifie la présence de CETTE méthode HTTP + ce chemin précis (pas juste le chemin seul,
-        // pour éviter de bloquer l'ajout de DELETE si GET/POST sur le même chemin existent déjà)
         $routeSignature = "Route::{$httpMethod}('{$routePath}'";
         if (!empty($routePath) && str_contains($existingRoutes, $routeSignature)) {
             \Log::info("Route déjà existante, ignorée: {$cleanRoute}");
