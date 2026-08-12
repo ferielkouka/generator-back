@@ -44,7 +44,7 @@ class FileWriterService
                     $code = $this->fixArrayType($code);
                     $code = $this->fixOptionalValueArithmetic($code);
                     $code = $this->fixUpdateIdPattern($code);
-                    $code = $this->fixDirectUpdatePattern($code);
+                    
                     $code = $this->ensureRequiredImports($code);
                     $code = $this->balanceBraces($code);
                 } elseif (str_ends_with($filename, '.html')) {
@@ -337,22 +337,13 @@ class FileWriterService
      * pour qu'ils appellent onEdit(item) à la place (cohérent avec fixDirectUpdatePattern).
      */
     private function fixUpdateIdPatternHtml(string $code): string
-    {
-        if (str_contains($code, "form.get('id')")) {
-            \Log::warning('Correctif HTML appliqué: form.get(id) remplacé par selectedId.');
-            $code = preg_replace("/form\.get\('id'\)\?\.\?value/", 'selectedId', $code);
-            $code = preg_replace("/form\.get\('id'\)\.value/", 'selectedId', $code);
-        }
-
-        // Si le bouton appelle onUpdate(item) ou onModify(item) directement, bascule vers onEdit(item)
-        $code = preg_replace(
-            '/\(click\)="on(Update|Modify)\((\w+)\)"/',
-            '(click)="onEdit($2)"',
-            $code
-        );
-
-        return $code;
+{
+    if (str_contains($code, "form.get('id')")) {
+        $code = preg_replace("/form\.get\('id'\)\?\.\?value/", 'selectedId', $code);
+        $code = preg_replace("/form\.get\('id'\)\.value/", 'selectedId', $code);
     }
+    return $code;
+}
 
     /**
      * Ajoute un style par défaut aux boutons d'action (Modifier/Supprimer) dans la liste,
