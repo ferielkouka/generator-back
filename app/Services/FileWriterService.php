@@ -44,10 +44,13 @@ class FileWriterService
                     $code = $this->fixArrayType($code);
                     $code = $this->fixOptionalValueArithmetic($code);
                     $code = $this->fixUpdateIdPattern($code);
+                    $code = $this->fixDirectUpdatePattern($code);
                     $code = $this->ensureRequiredImports($code);
                     $code = $this->balanceBraces($code);
                 } elseif (str_ends_with($filename, '.html')) {
                     $code = $this->fixUpdateIdPatternHtml($code);
+                } elseif (str_ends_with($filename, '.css')) {
+                    $code = $this->ensureButtonStyles($code);
                 }
                 $filePath = $componentDir . '/' . $filename;
                 $filesToCommit[$filePath] = $code;
@@ -223,7 +226,7 @@ class FileWriterService
 
         if (!str_contains($code, 'selectedId')) {
             $code = preg_replace(
-                '/(items\s*:\s*any\[\]\s*=\s*\[\];)/',
+                '/(\w+\s*:\s*any\[\]\s*=\s*\[\];)/',
                 "$1\n  selectedId: number | null = null;",
                 $code,
                 1
@@ -256,19 +259,143 @@ class FileWriterService
     }
 
     /**
-     * Corrige le HTML : remplace la condition d'affichage du bouton "Modifier"
-     * qui se base sur form.get('id')?.value (toujours faux) par selectedId.
+     * Corrige le pattern défaillant où le bouton "Modifier" appelle directement
+     * une méthode qui PUT l'objet cliqué tel quel (sans jamais charger le formulaire),
+     * empêchant toute vraie modification des valeurs par l'utilisateur.
+     * Transforme en: onEdit() qui charge le form + onSubmit() qui POST ou PUT selon selectedId.
      */
-    private function fixUpdateIdPatternHtml(string $code): string
+    private function fixDirectUpdatePattern(string $code): string
     {
-        if (!str_contains($code, "form.get('id')")) {
+        if (!preg_match(
+            '/on(Update|Modify)\((\w+):\s*any\)\s*\{\s*this\.http\.put\(([^,]+),\s*\2\)\.subscribe/',
+            $code,
+            $m
+        )) {
             return $code;
         }
 
-        \Log::warning('Correctif HTML appliqué: form.get(id) remplacé par selectedId.');
+        \Log::warning('Pattern défaillant "update direct sans formulaire" détecté, correction automatique appliquée.');
 
-        $code = preg_replace("/form\.get\('id'\)\?\.\?value/", 'selectedId', $code);
-        $code = preg_replace("/form\.get\('id'\)\.value/", 'selectedId', $code);
+        $methodName = 'on' . $m[1];
+        $itemVar = $m[2];
+        $putUrlExpr = trim($m[3]);
+
+        // Construit l'URL de base (sans l'ID concaténé) pour la réutiliser dans onSubmit
+        $baseUrlExpr = preg_replace("/\s*\+\s*" . preg_quote($itemVar, '/') . "\.id\s*$/", '', $putUrlExpr);
+
+        if (!str_contains($code, 'selectedId')) {
+            $code = preg_replace(
+                '/(\w+\s*:\s*any\[\]\s*=\s*\[\];)/',
+                "$1\n  selectedId: number | null = null;",
+                $code,
+                1
+            );
+        }
+
+        // Remplace l'ancienne méthode par une version qui charge le formulaire
+        $oldMethodPattern = '/' . preg_quote($methodName, '/') . '\(' . preg_quote($itemVar, '/') . ':\s*any\)\s*\{[^{}]*\{[^{}]*\}[^{}]*\}/s';
+        $newMethod = "onEdit({$itemVar}: any) {\n    this.selectedId = {$itemVar}.id;\n    this.form.patchValue({$itemVar});\n  }";
+        $newCode = preg_replace($oldMethodPattern, $newMethod, $code, 1);
+        if ($newCode !== null) {
+            $code = $newCode;
+        }
+
+        // Rend onSubmit() capable de POST ou PUT selon selectedId
+        $code = preg_replace_callback(
+            '/onSubmit\(\)\s*\{\s*this\.http\.post\(([^,]+),\s*this\.form\.value\)\.subscribe\(\{\s*next:\s*\(([^)]*)\)\s*=>\s*\{(.*?)\},\s*error:\s*\(([^)]*)\)\s*=>\s*([^}]*)\}\s*\}\);?\s*\}/s',
+            function ($sm) use ($baseUrlExpr) {
+                $postUrl = trim($sm[1]);
+                $nextParam = $sm[2];
+                $nextBody = $sm[3];
+                $errorParam = $sm[4];
+                $errorBody = $sm[5];
+
+                return "onSubmit() {\n"
+                    . "    if (this.selectedId) {\n"
+                    . "      this.http.put({$baseUrlExpr} + this.selectedId, this.form.value).subscribe({\n"
+                    . "        next: ({$nextParam}) => {{$nextBody}          this.selectedId = null;\n        },\n"
+                    . "        error: ({$errorParam}) => {$errorBody}\n"
+                    . "      });\n"
+                    . "    } else {\n"
+                    . "      this.http.post({$postUrl}, this.form.value).subscribe({\n"
+                    . "        next: ({$nextParam}) => {{$nextBody}},\n"
+                    . "        error: ({$errorParam}) => {$errorBody}\n"
+                    . "      });\n"
+                    . "    }\n"
+                    . "  }";
+            },
+            $code
+        );
+
+        return $code;
+    }
+
+    /**
+     * Corrige le HTML : remplace la condition d'affichage du bouton "Modifier"
+     * qui se base sur form.get('id')?.value (toujours faux) par selectedId.
+     * Corrige aussi les boutons qui appellent directement onUpdate(item)/onModify(item)
+     * pour qu'ils appellent onEdit(item) à la place (cohérent avec fixDirectUpdatePattern).
+     */
+    private function fixUpdateIdPatternHtml(string $code): string
+    {
+        if (str_contains($code, "form.get('id')")) {
+            \Log::warning('Correctif HTML appliqué: form.get(id) remplacé par selectedId.');
+            $code = preg_replace("/form\.get\('id'\)\?\.\?value/", 'selectedId', $code);
+            $code = preg_replace("/form\.get\('id'\)\.value/", 'selectedId', $code);
+        }
+
+        // Si le bouton appelle onUpdate(item) ou onModify(item) directement, bascule vers onEdit(item)
+        $code = preg_replace(
+            '/\(click\)="on(Update|Modify)\((\w+)\)"/',
+            '(click)="onEdit($2)"',
+            $code
+        );
+
+        return $code;
+    }
+
+    /**
+     * Ajoute un style par défaut aux boutons d'action (Modifier/Supprimer) dans la liste,
+     * si le CSS généré ne les stylise pas déjà.
+     */
+    private function ensureButtonStyles(string $code): string
+    {
+        if (str_contains($code, '.list-item button')) {
+            return $code;
+        }
+
+        $code .= <<<CSS
+
+
+.list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.list-item button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  margin-left: 6px;
+  color: white;
+}
+.list-item button:first-of-type {
+  background: linear-gradient(135deg, #17a2b8, #117a8b);
+}
+.list-item button:last-of-type {
+  background: linear-gradient(135deg, #dc3545, #a71d2a);
+}
+.list-item button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+CSS;
 
         return $code;
     }
