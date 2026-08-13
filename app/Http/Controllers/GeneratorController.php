@@ -223,8 +223,8 @@ class GeneratorController extends Controller
     }
 
     private function getFileUploadInstructions(): string
-{
-    return <<<'TXT'
+    {
+        return <<<'TXT'
 
 CRITICAL - THIS REQUEST INVOLVES FILE UPLOAD. You MUST copy this EXACT pattern, do NOT use FormControl for file fields under any circumstance:
 
@@ -249,7 +249,8 @@ public function store(Request $request)
 
 Migration columns for files must be nullable string columns using the exact snake_case names used in formData.append() (e.g. fichier_examen, fichier_correction), matching exactly what the controller expects.
 TXT;
-}
+    }
+
     private function getSystemPrompt(): string
     {
         return <<<'PROMPT'
