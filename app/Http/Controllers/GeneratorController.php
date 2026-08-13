@@ -223,54 +223,33 @@ class GeneratorController extends Controller
     }
 
     private function getFileUploadInstructions(): string
-    {
-        return <<<'TXT'
+{
+    return <<<'TXT'
 
-IMPORTANT: This request involves file upload (PDF, image, or document). You MUST use this exact pattern:
+CRITICAL - THIS REQUEST INVOLVES FILE UPLOAD. You MUST copy this EXACT pattern, do NOT use FormControl for file fields under any circumstance:
 
-For the Angular component (.ts), use FormData instead of sending this.form.value directly, and separate properties to hold the selected File object(s):
+"xxx.component.ts": "import { Component, OnInit } from '@angular/core';\nimport { CommonModule } from '@angular/common';\nimport { ReactiveFormsModule, FormGroup, FormControl } from '@angular/forms';\nimport { HttpClient } from '@angular/common/http';\nimport { environment } from '../../environment';\n\n@Component({\n  selector: 'app-xxx',\n  standalone: true,\n  imports: [CommonModule, ReactiveFormsModule],\n  templateUrl: './xxx.component.html',\n  styleUrls: ['./xxx.component.css']\n})\nexport class XxxComponent implements OnInit {\n  successMessage = '';\n  items: any[] = [];\n  selectedId: number | null = null;\n  selectedFile1: File | null = null;\n  selectedFile2: File | null = null;\n  form = new FormGroup({\n    titre: new FormControl('')\n  });\n\n  constructor(private http: HttpClient) {}\n\n  ngOnInit() {\n    this.http.get(environment.apiUrl + '/xxx').subscribe({\n      next: (r: any) => { this.items = r; },\n      error: (e: any) => console.error(e)\n    });\n  }\n\n  onFile1Selected(event: any) {\n    this.selectedFile1 = event.target.files[0];\n  }\n\n  onFile2Selected(event: any) {\n    this.selectedFile2 = event.target.files[0];\n  }\n\n  onSubmit() {\n    const formData = new FormData();\n    formData.append('titre', this.form.get('titre')?.value);\n    if (this.selectedFile1) { formData.append('fichier_examen', this.selectedFile1); }\n    if (this.selectedFile2) { formData.append('fichier_correction', this.selectedFile2); }\n    this.http.post(environment.apiUrl + '/xxx', formData).subscribe({\n      next: (r: any) => {\n        this.successMessage = '✅ Enregistré avec succès !';\n        this.form.reset();\n        this.selectedFile1 = null;\n        this.selectedFile2 = null;\n        this.items.push(r);\n      },\n      error: (e: any) => console.error(e)\n    });\n  }\n\n  onDelete(id: number) {\n    this.http.delete(environment.apiUrl + '/xxx/' + id).subscribe({\n      next: () => {\n        this.items = this.items.filter((i: any) => i.id !== id);\n        this.successMessage = '✅ Supprimé avec succès !';\n      },\n      error: (e: any) => console.error(e)\n    });\n  }\n}"
 
-selectedFile: File | null = null;
+Use this exact structure adapted to the actual field names. The HTML file input must be: <input type="file" (change)="onFile1Selected($event)"/> — NEVER formControlName on a file input.
 
-onFileSelected(event: any) {
-  this.selectedFile = event.target.files[0];
-}
-
-onSubmit() {
-  const formData = new FormData();
-  formData.append('titre', this.form.get('titre')?.value);
-  if (this.selectedFile) {
-    formData.append('fichier', this.selectedFile);
-  }
-  this.http.post(environment.apiUrl + '/examen', formData).subscribe({
-    next: (r: any) => {
-      this.successMessage = '✅ Enregistré avec succès !';
-      this.form.reset();
-      this.selectedFile = null;
-      this.items.push(r);
-    },
-    error: (e: any) => console.error(e)
-  });
-}
-
-In the HTML, use <input type="file" (change)="onFileSelected($event)"/> instead of a text input for any file field. Do NOT bind file inputs with formControlName.
-
-For the Laravel controller, ALWAYS add "use Illuminate\Support\Facades\Storage;" at the top of the file, and handle each file field like this:
+For the Laravel controller, ALWAYS add "use Illuminate\Support\Facades\Storage;" right after the namespace line, and handle files like this:
 
 public function store(Request $request)
 {
-    $data = $request->except(['fichier']);
-    if ($request->hasFile('fichier')) {
-        $data['fichier'] = $request->file('fichier')->store('uploads', 'public');
+    $data = $request->only(['titre']);
+    if ($request->hasFile('fichier_examen')) {
+        $data['fichier_examen'] = $request->file('fichier_examen')->store('uploads', 'public');
     }
-    $item = Examen::create($data);
+    if ($request->hasFile('fichier_correction')) {
+        $data['fichier_correction'] = $request->file('fichier_correction')->store('uploads', 'public');
+    }
+    $item = Xxx::create($data);
     return response()->json($item, 201);
 }
 
-The migration column for a file field must be a nullable string (storing the file path), never a file/blob type. If there are multiple file fields (e.g. fichierExamen and fichierCorrection), repeat this pattern for each one with its own form field name.
+Migration columns for files must be nullable string columns using the exact snake_case names used in formData.append() (e.g. fichier_examen, fichier_correction), matching exactly what the controller expects.
 TXT;
-    }
-
+}
     private function getSystemPrompt(): string
     {
         return <<<'PROMPT'
