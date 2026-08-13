@@ -48,6 +48,10 @@ class GeneratorController extends Controller
             $userMessage .= "\n\n[FICHIERS ACTUELS]\n" . $truncated;
         }
 
+        if ($this->detectFileUploadNeed($request->input('message'))) {
+            $userMessage .= $this->getFileUploadInstructions();
+        }
+
         $systemPrompt = $this->getSystemPrompt();
 
         $maxRetries = 2;
@@ -199,9 +203,77 @@ class GeneratorController extends Controller
         return $items[0] ?? '';
     }
 
-    private function getSystemPrompt(): string
+    /**
+     * Détecte si la demande implique un upload de fichier (PDF, image, document),
+     * et enrichit le message avec des instructions précises pour que Groq génère
+     * un vrai formulaire multipart fonctionnel (Angular FormData + Laravel Storage).
+     */
+    private function detectFileUploadNeed(string $message): bool
+    {
+        $keywords = ['fichier', 'upload', 'pdf', 'image', 'photo', 'document', 'pièce jointe', 'télécharger'];
+        $message = strtolower($message);
+
+        foreach ($keywords as $keyword) {
+            if (str_contains($message, $keyword)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function getFileUploadInstructions(): string
+    {
+        return <<<'TXT'
+
+IMPORTANT: This request involves file upload (PDF, image, or document). You MUST use this exact pattern:
+
+For the Angular component (.ts), use FormData instead of sending this.form.value directly, and separate properties to hold the selected File object(s):
+
+selectedFile: File | null = null;
+
+onFileSelected(event: any) {
+  this.selectedFile = event.target.files[0];
+}
+
+onSubmit() {
+  const formData = new FormData();
+  formData.append('titre', this.form.get('titre')?.value);
+  if (this.selectedFile) {
+    formData.append('fichier', this.selectedFile);
+  }
+  this.http.post(environment.apiUrl + '/examen', formData).subscribe({
+    next: (r: any) => {
+      this.successMessage = '✅ Enregistré avec succès !';
+      this.form.reset();
+      this.selectedFile = null;
+      this.items.push(r);
+    },
+    error: (e: any) => console.error(e)
+  });
+}
+
+In the HTML, use <input type="file" (change)="onFileSelected($event)"/> instead of a text input for any file field. Do NOT bind file inputs with formControlName.
+
+For the Laravel controller, ALWAYS add "use Illuminate\Support\Facades\Storage;" at the top of the file, and handle each file field like this:
+
+public function store(Request $request)
 {
-    return <<<'PROMPT'
+    $data = $request->except(['fichier']);
+    if ($request->hasFile('fichier')) {
+        $data['fichier'] = $request->file('fichier')->store('uploads', 'public');
+    }
+    $item = Examen::create($data);
+    return response()->json($item, 201);
+}
+
+The migration column for a file field must be a nullable string (storing the file path), never a file/blob type. If there are multiple file fields (e.g. fichierExamen and fichierCorrection), repeat this pattern for each one with its own form field name.
+TXT;
+    }
+
+    private function getSystemPrompt(): string
+    {
+        return <<<'PROMPT'
 You are a code generator. Output ONLY this JSON structure with real code:
 
 {
@@ -240,5 +312,5 @@ For CRUD components (with edit/delete), ALWAYS generate exactly 4 Laravel routes
 Always use beautiful CSS with shadows, gradients and transitions, including styled action buttons (Modifier/Supprimer) with distinct colors.
 AuthController ALWAYS has BOTH login() AND register() methods.
 PROMPT;
-}
+    }
 }

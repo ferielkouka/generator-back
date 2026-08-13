@@ -44,7 +44,7 @@ class FileWriterService
                     $code = $this->fixArrayType($code);
                     $code = $this->fixOptionalValueArithmetic($code);
                     $code = $this->fixUpdateIdPattern($code);
-                    
+                    $code = $this->fixDirectUpdatePattern($code);
                     $code = $this->ensureRequiredImports($code);
                     $code = $this->balanceBraces($code);
                 } elseif (str_ends_with($filename, '.html')) {
@@ -79,6 +79,7 @@ class FileWriterService
             if (!str_starts_with(trim($code), '<?php')) {
                 $code = '<?php' . "\n\n" . $code;
             }
+            $code = $this->ensureStorageImport($code);
             if (File::exists($controllerPath)) {
                 $this->mergeController($controllerPath, $code);
             } else {
@@ -337,13 +338,22 @@ class FileWriterService
      * pour qu'ils appellent onEdit(item) à la place (cohérent avec fixDirectUpdatePattern).
      */
     private function fixUpdateIdPatternHtml(string $code): string
-{
-    if (str_contains($code, "form.get('id')")) {
-        $code = preg_replace("/form\.get\('id'\)\?\.\?value/", 'selectedId', $code);
-        $code = preg_replace("/form\.get\('id'\)\.value/", 'selectedId', $code);
+    {
+        if (str_contains($code, "form.get('id')")) {
+            \Log::warning('Correctif HTML appliqué: form.get(id) remplacé par selectedId.');
+            $code = preg_replace("/form\.get\('id'\)\?\.\?value/", 'selectedId', $code);
+            $code = preg_replace("/form\.get\('id'\)\.value/", 'selectedId', $code);
+        }
+
+        // Si le bouton appelle onUpdate(item) ou onModify(item) directement, bascule vers onEdit(item)
+        $code = preg_replace(
+            '/\(click\)="on(Update|Modify)\((\w+)\)"/',
+            '(click)="onEdit($2)"',
+            $code
+        );
+
+        return $code;
     }
-    return $code;
-}
 
     /**
      * Ajoute un style par défaut aux boutons d'action (Modifier/Supprimer) dans la liste,
@@ -562,6 +572,25 @@ CSS;
     {
         File::put($controllerPath, $newCode);
         \Log::info("Controller écrasé: {$controllerPath}");
+    }
+
+    /**
+     * Ajoute automatiquement l'import de la façade Storage si le controller
+     * l'utilise (Storage::...) sans l'avoir importé, ce qui cause une erreur fatale
+     * "Class App\Http\Controllers\Storage not found".
+     */
+    private function ensureStorageImport(string $code): string
+    {
+        if (str_contains($code, 'Storage::') && !str_contains($code, 'use Illuminate\Support\Facades\Storage;')) {
+            \Log::warning('Import Storage manquant détecté, ajout automatique.');
+            $code = preg_replace(
+                '/(namespace App\\\\Http\\\\Controllers;)/',
+                "$1\n\nuse Illuminate\\Support\\Facades\\Storage;",
+                $code,
+                1
+            );
+        }
+        return $code;
     }
 
     /**
