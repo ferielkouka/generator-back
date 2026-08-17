@@ -75,6 +75,11 @@ class GeneratorController extends Controller
                     ['role' => 'user', 'content' => $currentUserMessage],
                 ],
                 'max_tokens'      => 8000,
+
+
+
+
+                
                 'response_format' => ['type' => 'json_object'],
             ]);
 
