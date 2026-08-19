@@ -69,7 +69,7 @@ class GeneratorController extends Controller
                 'Authorization' => 'Bearer ' . config('services.groq.key'),
                 'Content-Type'  => 'application/json',
             ])->post('https://api.groq.com/openai/v1/chat/completions', [
-                'model'           => 'openai/gpt-oss-120b',
+              'model'           => 'meta-llama/llama-4-scout-17b-16e-instruct',
                 'messages'        => [
                     ['role' => 'system', 'content' => $systemPrompt],
                     ['role' => 'user', 'content' => $currentUserMessage],
