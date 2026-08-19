@@ -199,7 +199,11 @@ class FileWriterService
      */
     private function fixOptionalValueArithmetic(string $code): string
     {
-        $pattern = '/(?<!Number\()(\bthis\.\w+\.get\([\'"]\w+[\'"]\)\?\.value)\b/';
+        // Ne cible que les cas où le ?.value est immédiatement suivi (après espaces optionnels)
+        // d'un opérateur arithmétique (* + - /), ce qui indique un vrai calcul, pas un simple envoi de valeur.
+        // Évite les faux positifs comme formData.append('title', this.form.get('title')?.value) qui ne doit
+        // JAMAIS être encapsulé dans Number().
+        $pattern = '/(?<!Number\()(\bthis\.\w+\.get\([\'"]\w+[\'"]\)\?\.value)(?=\s*[*+\-\/]\s*(?:this\.|\d))/';
 
         $newCode = preg_replace_callback($pattern, function ($matches) {
             return "Number({$matches[1]})";
