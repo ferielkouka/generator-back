@@ -76,6 +76,7 @@ class FileWriterService
             $controllerPath = base_path($generated['laravel']['controller']['file']);
             File::ensureDirectoryExists(dirname($controllerPath));
             $code = $generated['laravel']['controller']['code'];
+            $code = $this->deduplicatePhpBlock($code);
             if (!str_starts_with(trim($code), '<?php')) {
                 $code = '<?php' . "\n\n" . $code;
             }
@@ -570,6 +571,34 @@ CSS;
     private function fixDuplicateApiPath(string $code): string
     {
         return str_replace("environment.apiUrl + '/api/", "environment.apiUrl + '/", $code);
+    }
+
+    /**
+     * Détecte et supprime les blocs PHP dupliqués que Groq génère parfois
+     * (le même controller répété plusieurs fois d'affilée dans le code renvoyé,
+     * chaque répétition recommençant par "<?php"), ce qui casse la syntaxe PHP
+     * et provoque une erreur fatale "Cannot redeclare class Xxx".
+     * Ne garde que la première occurrence complète.
+     */
+    private function deduplicatePhpBlock(string $code): string
+    {
+        // Compte les occurrences de "<?php" (avec ou sans namespace juste après)
+        $occurrences = substr_count($code, '<?php');
+
+        if ($occurrences <= 1) {
+            return $code;
+        }
+
+        // Coupe tout ce qui vient à partir de la 2e occurrence de "<?php"
+        $firstPos = strpos($code, '<?php');
+        $secondPos = strpos($code, '<?php', $firstPos + 5);
+
+        if ($secondPos !== false) {
+            \Log::warning("Code PHP dupliqué détecté ({$occurrences} occurrences de '<?php'), troncature au premier bloc.");
+            $code = substr($code, 0, $secondPos);
+        }
+
+        return rtrim($code);
     }
 
     private function mergeController(string $controllerPath, string $newCode): void
