@@ -71,12 +71,12 @@ class GeneratorController extends Controller
             ])->post('https://api.groq.com/openai/v1/chat/completions', [
                'model'           => 'openai/gpt-oss-20b',
 
-               
+
                 'messages'        => [
                     ['role' => 'system', 'content' => $systemPrompt],
                     ['role' => 'user', 'content' => $currentUserMessage],
                 ],
-                'max_tokens'      => 8000,
+                'max_tokens'      => 4000,
                 'response_format' => ['type' => 'json_object'],
             ]);
 
