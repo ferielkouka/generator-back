@@ -164,17 +164,32 @@ class GeneratorController extends Controller
         $table = $generated['database']['table'] ?? null;
         $fields = $generated['database']['fields'] ?? [];
 
-        if ($table && !Schema::hasTable($table)) {
+        // ✅ FIX: crée la table si elle n'existe pas, OU synchronise les colonnes
+        // manquantes si elle existe déjà (évite les erreurs "Column not found"
+        // quand une feature est régénérée avec de nouveaux champs).
+        if ($table) {
             try {
-                Schema::create($table, function(Blueprint $t) use ($fields) {
-                    $t->id();
-                    foreach ($fields as $field) {
-                        if (in_array($field, ['id', 'created_at', 'updated_at'])) continue;
-                        $t->string($field)->nullable();
-                    }
-                    $t->timestamps();
-                });
-                \Log::info("Table créée: {$table}");
+                if (!Schema::hasTable($table)) {
+                    Schema::create($table, function (Blueprint $t) use ($fields) {
+                        $t->id();
+                        foreach ($fields as $field) {
+                            if (in_array($field, ['id', 'created_at', 'updated_at'])) continue;
+                            $t->string($field)->nullable();
+                        }
+                        $t->timestamps();
+                    });
+                    \Log::info("Table créée: {$table}");
+                } else {
+                    Schema::table($table, function (Blueprint $t) use ($fields, $table) {
+                        foreach ($fields as $field) {
+                            if (in_array($field, ['id', 'created_at', 'updated_at'])) continue;
+                            if (!Schema::hasColumn($table, $field)) {
+                                $t->string($field)->nullable();
+                            }
+                        }
+                    });
+                    \Log::info("Colonnes synchronisées: {$table}");
+                }
             } catch (\Exception $e) {
                 \Log::error('Schema error: ' . $e->getMessage());
             }
