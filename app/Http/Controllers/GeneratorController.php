@@ -65,34 +65,37 @@ class GeneratorController extends Controller
                 $currentUserMessage .= "\n\nIMPORTANT: Ta réponse précédente ne contenait pas la section \"laravel\" complète (controller, model, migration, routes). Tu DOIS impérativement inclure cette section cette fois-ci, en plus du code Angular.";
             }
 
-            $response = \Illuminate\Support\Facades\Http::timeout(60)->withHeaders([
-                'Authorization' => 'Bearer ' . config('services.groq.key'),
-                'Content-Type'  => 'application/json',
-            ])->post('https://api.groq.com/openai/v1/chat/completions', [
-                'model'           => 'openai/gpt-oss-20b',
-                'messages'        => [
-                    ['role' => 'system', 'content' => $systemPrompt],
-                    ['role' => 'user', 'content' => $currentUserMessage],
-                ],
-                'max_tokens'      => 8000,
-                'response_format' => ['type' => 'json_object'],
-            ]);
+            $response = \Illuminate\Support\Facades\Http::timeout(60)->post(
+                'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' . config('services.gemini.key'),
+                [
+                    'system_instruction' => [
+                        'parts' => [['text' => $systemPrompt]],
+                    ],
+                    'contents' => [
+                        ['role' => 'user', 'parts' => [['text' => $currentUserMessage]]],
+                    ],
+                    'generationConfig' => [
+                        'maxOutputTokens'  => 8000,
+                        'responseMimeType' => 'application/json',
+                    ],
+                ]
+            );
 
-            \Log::info("Groq response status (tentative {$attempt}): " . $response->status());
+            \Log::info("Gemini response status (tentative {$attempt}): " . $response->status());
 
             if ($response->status() === 429) {
                 return response()->json(['error' => 'Quota IA dépassé, réessaie dans quelques secondes.'], 429);
             }
 
             if (!$response->successful()) {
-                \Log::error("Groq error body (tentative {$attempt}): " . $response->body());
+                \Log::error("Gemini error body (tentative {$attempt}): " . $response->body());
                 if ($attempt === $maxRetries) {
-                    return response()->json(['error' => 'Erreur API Groq: ' . $response->status()], 502);
+                    return response()->json(['error' => 'Erreur API Gemini: ' . $response->status()], 502);
                 }
                 continue;
             }
 
-            $rawJson = $response->json('choices.0.message.content');
+            $rawJson = $response->json('candidates.0.content.parts.0.text');
             \Log::info("Raw JSON (tentative {$attempt}): " . $rawJson);
 
             $parsed = json_decode($rawJson, true);
@@ -220,7 +223,7 @@ class GeneratorController extends Controller
 
     /**
      * Détecte si la demande implique un upload de fichier (PDF, image, document),
-     * et enrichit le message avec des instructions précises pour que Groq génère
+     * et enrichit le message avec des instructions précises pour que l'IA génère
      * un vrai formulaire multipart fonctionnel (Angular FormData + Laravel Storage).
      */
     private function detectFileUploadNeed(string $message): bool
