@@ -66,7 +66,7 @@ class GeneratorController extends Controller
             }
 
             $response = \Illuminate\Support\Facades\Http::timeout(60)->post(
-                'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' . config('services.gemini.key'),
+                'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=' . config('services.gemini.key'),
                 [
                     'system_instruction' => [
                         'parts' => [['text' => $systemPrompt]],
