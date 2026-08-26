@@ -525,7 +525,7 @@ CSS;
 
         if (!$this->github->fileExists($envPath)) {
             $content  = 'export const environment = {' . PHP_EOL;
-            $content .= "  apiUrl: 'https://generator-back-production.up.railway.app/api'" . PHP_EOL;
+            $content .= "  apiUrl: 'https://generator-back.onrender.com/api'" . PHP_EOL;
             $content .= '};' . PHP_EOL;
             $this->github->putFile($envPath, $content, 'Create environment.ts');
         }
