@@ -12,12 +12,23 @@ class GitHubWriterService
     private string $repo;
     private string $branch;
 
-    public function __construct()
-    {
-        $this->token = config('services.github.token');
-        $this->owner = config('services.github.owner');
-        $this->repo = config('services.github.repo');
-        $this->branch = config('services.github.branch', 'main');
+    /**
+     * Si $owner/$repo/$branch/$token sont fournis, ils sont utilisés tels quels
+     * (permet d'instancier ce service pour n'importe quel repo, ex: le repo
+     * "back" en plus du repo "app" par défaut). Sinon, on retombe sur la
+     * config par défaut (services.github.*), pour ne rien casser côté
+     * injection automatique via le conteneur Laravel.
+     */
+    public function __construct(
+        ?string $owner = null,
+        ?string $repo = null,
+        ?string $branch = null,
+        ?string $token = null
+    ) {
+        $this->token  = $token  ?? config('services.github.token');
+        $this->owner  = $owner  ?? config('services.github.owner');
+        $this->repo   = $repo   ?? config('services.github.repo');
+        $this->branch = $branch ?? config('services.github.branch', 'main');
     }
 
     public function putFile(string $path, string $content, string $commitMessage = 'Update generated file'): bool
@@ -147,7 +158,7 @@ class GitHubWriterService
                 return false;
             }
 
-            Log::info("GitHub: commit groupé créé avec succès (" . count($files) . " fichiers): {$newCommitSha}");
+            Log::info("GitHub: commit groupé créé avec succès (" . count($files) . " fichiers) sur {$this->owner}/{$this->repo}: {$newCommitSha}");
             return true;
 
         } catch (\Exception $e) {
