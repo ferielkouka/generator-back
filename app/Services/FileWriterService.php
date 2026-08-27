@@ -38,6 +38,7 @@ class FileWriterService
                     $code = $this->fixAngularImports($code);
                     $code = $this->fixAngularComponent($code);
                     $code = $this->fixApiUrl($code);
+                    $code = $this->ensureEnvironmentExposed($code);
                     $code = $this->fixDuplicateApiPath($code);
                     $code = $this->fixSuccessMessage($code);
                     $code = $this->fixCommonModule($code);
@@ -560,6 +561,48 @@ CSS;
                 $code
             );
         }
+
+        return $code;
+    }
+
+    /**
+     * GARDE-FOU: si le fichier .ts importe "environment" (import { environment } from '../../environment')
+     * mais que la classe du composant ne l'expose pas comme propriété publique, alors toute utilisation de
+     * "environment.xxx" DIRECTEMENT DANS LE TEMPLATE HTML provoque une erreur de compilation Angular
+     * (TS2339: Property 'environment' does not exist on type 'XxxComponent'), car le HTML ne peut accéder
+     * qu'aux propriétés de la classe, jamais aux imports bruts du fichier .ts.
+     *
+     * On ajoute donc systématiquement "environment = environment;" comme première ligne de la classe
+     * dès que l'import est présent et que l'exposition ne l'est pas déjà — que le HTML l'utilise ou non,
+     * ce correctif est sans danger et évite tout crash de build sur les composants avec upload de fichiers
+     * (liens de téléchargement type environment.apiUrl + '/storage/...' dans le template).
+     */
+    private function ensureEnvironmentExposed(string $code): string
+    {
+        $hasImport = preg_match('/import\s*\{\s*environment\s*\}\s*from\s*[\'"][^\'"]+[\'"]/', $code);
+
+        if (!$hasImport) {
+            return $code;
+        }
+
+        // Déjà exposé sous une forme ou une autre (ex: "environment = environment;")
+        if (preg_match('/^\s*environment\s*=\s*environment\s*;/m', $code)) {
+            return $code;
+        }
+
+        if (!preg_match('/(export\s+class\s+\w+[^{]*\{)/', $code, $matches)) {
+            return $code;
+        }
+
+        \Log::warning("Propriété 'environment' non exposée à la classe détectée, ajout automatique de 'environment = environment;' pour éviter un crash de build (TS2339) si le template l'utilise.");
+
+        $classOpening = $matches[1];
+        $code = preg_replace(
+            '/' . preg_quote($classOpening, '/') . '/',
+            $classOpening . PHP_EOL . '  environment = environment;',
+            $code,
+            1
+        );
 
         return $code;
     }
