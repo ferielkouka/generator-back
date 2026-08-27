@@ -42,10 +42,8 @@ return [
     'gemini' => [
         'key' => env('GEMINI_API_KEY'),
     ],
-    'mistral' => [
-    'key' => env('MISTRAL_API_KEY'),
-],
 
+    // Repo GitHub de "generated-app" (Angular), déployé sur Vercel.
     'github' => [
         'token' => env('GITHUB_TOKEN'),
         'owner' => env('GITHUB_REPO_OWNER'),
@@ -53,10 +51,15 @@ return [
         'branch' => env('GITHUB_REPO_BRANCH', 'main'),
     ],
 
+    // Repo GitHub de "generator-back" (Laravel), déployé sur Railway.
+    // Permet de committer les fichiers Laravel générés (controller, model,
+    // migration, routes) pour qu'ils survivent aux redéploiements Railway,
+    // au lieu d'exister uniquement sur le disque éphémère du conteneur.
+    'github_back' => [
+        'token'  => env('GITHUB_BACK_TOKEN', env('GITHUB_TOKEN')),
+        'owner'  => env('GITHUB_BACK_REPO_OWNER'),
+        'repo'   => env('GITHUB_BACK_REPO_NAME'),
+        'branch' => env('GITHUB_BACK_REPO_BRANCH', 'main'),
+    ],
 
-
-
-
-
-    
 ];
