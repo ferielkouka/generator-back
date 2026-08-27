@@ -8,13 +8,25 @@ class FileWriterService
 {
     private string $angularPath;   // chemin RELATIF dans le repo GitHub (pas un chemin disque)
     private string $laravelPath;
-    private GitHubWriterService $github;
+    private GitHubWriterService $github;      // repo "app" (generated-app / Angular)
+    private GitHubWriterService $githubBack;  // repo "back" (generator-back / Laravel)
 
     public function __construct(GitHubWriterService $github)
     {
         $this->angularPath = 'src/app';
         $this->laravelPath = base_path();
         $this->github = $github;
+
+        // Instance dédiée au repo "back", pour committer les fichiers Laravel générés
+        // et qu'ils survivent aux redémarrages/redéploiements du conteneur (Render en
+        // particulier redémarre très fréquemment sur le plan gratuit, ce qui efface
+        // sinon systématiquement le disque local à chaque fois).
+        $this->githubBack = new GitHubWriterService(
+            config('services.github_back.owner'),
+            config('services.github_back.repo'),
+            config('services.github_back.branch'),
+            config('services.github_back.token'),
+        );
     }
 
     public function write(array $generated): array
@@ -73,8 +85,16 @@ class FileWriterService
             $this->github->putFiles($filesToCommit, "Generate/update {$componentFolder} component");
         }
 
+        // Accumule tous les fichiers Laravel modifiés dans cette génération, pour un
+        // commit groupé unique sur le repo "back" à la fin de cette méthode. Chaque
+        // fichier est TOUJOURS écrit localement en plus (comportement inchangé), pour
+        // que le serveur en cours d'exécution en dispose immédiatement sans attendre
+        // le redéploiement déclenché par ce commit.
+        $laravelFilesToCommit = [];
+
         if (isset($generated['laravel']['controller'])) {
-            $controllerPath = base_path($generated['laravel']['controller']['file']);
+            $controllerRelPath = $generated['laravel']['controller']['file'];
+            $controllerPath = base_path($controllerRelPath);
             File::ensureDirectoryExists(dirname($controllerPath));
             $code = $generated['laravel']['controller']['code'];
             $code = $this->deduplicatePhpBlock($code);
@@ -88,12 +108,14 @@ class FileWriterService
                 File::put($controllerPath, $code);
             }
             $writtenFiles[] = $controllerPath;
+            $laravelFilesToCommit[$controllerRelPath] = $code;
         }
 
         $table = $generated['database']['table'] ?? null;
         if ($table) {
             $modelName = ucfirst(rtrim($table, 's'));
-            $modelPath = base_path("app/Models/{$modelName}.php");
+            $modelRelPath = "app/Models/{$modelName}.php";
+            $modelPath = base_path($modelRelPath);
 
             if (!File::exists($modelPath)) {
                 $fields = $generated['database']['fields'] ?? [];
@@ -111,6 +133,7 @@ class FileWriterService
 
                 File::put($modelPath, $modelCode);
                 $writtenFiles[] = $modelPath;
+                $laravelFilesToCommit[$modelRelPath] = $modelCode;
                 \Log::info("Model créé: {$modelPath}");
             }
         }
@@ -118,25 +141,48 @@ class FileWriterService
         if (isset($generated['laravel']['migration'])) {
             $timestamp = date('Y_m_d_His');
             $table = $generated['database']['table'] ?? 'unknown';
-            $existing = glob(base_path("database/migrations/*_create_{$table}_table.php"));
+            $existingLocal = glob(base_path("database/migrations/*_create_{$table}_table.php"));
 
-            if (empty($existing)) {
-                $migrationPath = base_path("database/migrations/{$timestamp}_create_{$table}_table.php");
+            // Vérifie aussi sur le repo GitHub "back" (pas seulement le disque local),
+            // car le disque local peut avoir été réinitialisé par un redémarrage récent
+            // alors que la migration existe déjà bel et bien sur GitHub.
+            $existingRemote = false;
+            foreach ($this->githubBack->listDirectory('database/migrations') as $item) {
+                if (($item['type'] ?? '') === 'file' && str_ends_with($item['name'] ?? '', "_create_{$table}_table.php")) {
+                    $existingRemote = true;
+                    break;
+                }
+            }
+
+            if (empty($existingLocal) && !$existingRemote) {
+                $migrationRelPath = "database/migrations/{$timestamp}_create_{$table}_table.php";
+                $migrationPath = base_path($migrationRelPath);
                 $migCode = $generated['laravel']['migration']['code'];
                 if (!str_starts_with(trim($migCode), '<?php')) {
                     $migCode = '<?php' . "\n\n" . $migCode;
                 }
                 File::put($migrationPath, $migCode);
                 $writtenFiles[] = $migrationPath;
+                $laravelFilesToCommit[$migrationRelPath] = $migCode;
             }
         }
 
         if (isset($generated['laravel']['routes'])) {
             $this->addLaravelRoute($generated['laravel']['routes']);
             $writtenFiles[] = base_path('routes/api.php');
+            // On committe le contenu final (déjà fusionné avec l'existant par addLaravelRoute)
+            $laravelFilesToCommit['routes/api.php'] = File::get(base_path('routes/api.php'));
         }
 
-        $this->patchUserModel();
+        $userModelChange = $this->patchUserModel();
+        if ($userModelChange !== null) {
+            $laravelFilesToCommit['app/Models/User.php'] = $userModelChange;
+        }
+
+        if (!empty($laravelFilesToCommit)) {
+            $featureLabel = $generated['feature'] ?? 'feature';
+            $this->githubBack->putFiles($laravelFilesToCommit, "Generate/update Laravel backend for {$featureLabel}");
+        }
 
         return $writtenFiles;
     }
@@ -837,10 +883,15 @@ CSS;
         return true;
     }
 
-    private function patchUserModel(): void
+    /**
+     * Retourne le nouveau contenu de User.php si une modification a été appliquée
+     * (pour permettre de le committer sur le repo "back"), ou null si le fichier
+     * n'existe pas ou était déjà à jour.
+     */
+    private function patchUserModel(): ?string
     {
         $userModelPath = base_path('app/Models/User.php');
-        if (!File::exists($userModelPath)) return;
+        if (!File::exists($userModelPath)) return null;
 
         $content = File::get($userModelPath);
         if (!str_contains($content, 'HasApiTokens')) {
@@ -855,7 +906,10 @@ CSS;
                 $content
             );
             File::put($userModelPath, $content);
+            return $content;
         }
+
+        return null;
     }
 
     private function fixAngularImports(string $code): string
