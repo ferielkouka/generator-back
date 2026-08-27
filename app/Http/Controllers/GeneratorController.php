@@ -65,6 +65,9 @@ class GeneratorController extends Controller
                 $currentUserMessage .= "\n\nIMPORTANT: Ta réponse précédente ne contenait pas la section \"laravel\" complète (controller, model, migration, routes). Tu DOIS impérativement inclure cette section cette fois-ci, en plus du code Angular.";
             }
 
+            $mistralKey = config('services.mistral.key');
+            \Log::info('DEBUG clé Mistral - longueur: ' . strlen($mistralKey ?? '') . ', début: ' . substr($mistralKey ?? '', 0, 6) . ', fin: ' . substr($mistralKey ?? '', -4));
+
             $response = \Illuminate\Support\Facades\Http::timeout(60)->withHeaders([
                 'Authorization' => 'Bearer ' . config('services.mistral.key'),
                 'Content-Type'  => 'application/json',
