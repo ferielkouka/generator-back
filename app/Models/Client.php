@@ -1,1 +1,11 @@
-<?phpnamespace AppModels;use IlluminateDatabaseEloquentFactoriesHasFactory;use IlluminateDatabaseEloquentModel;class Client extends Model{use HasFactory;protected $fillable = ['name', 'email', 'phone'];}
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Client extends Model
+{
+    protected $table = 'clients';
+    protected $fillable = ['name', 'email', 'phone'];
+}
