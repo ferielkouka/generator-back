@@ -218,7 +218,11 @@ class GeneratorController extends Controller
             }
         }
 
-        return $items[0] ?? '';
+        // Aucune correspondance trouvée : c'est une NOUVELLE feature.
+        // Retourner '' plutôt que $items[0] pour éviter d'injecter par erreur
+        // le contenu d'une feature existante non liée dans le prompt (ce qui
+        // poussait Mistral à réutiliser/écraser cette feature au hasard).
+        return '';
     }
 
     /**
