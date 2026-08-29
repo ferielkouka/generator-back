@@ -65,7 +65,24 @@ class FileWriterService
                 } elseif (str_ends_with($filename, '.css')) {
                     $code = $this->ensureButtonStyles($code);
                 }
-                $filePath = $componentDir . '/' . $filename;
+                // ✅ FIX: force le nom de fichier RÉEL des fichiers de composant à
+                // correspondre exactement à $componentFolder (celui utilisé dans
+                // templateUrl/styleUrls/imports partout ailleurs), au lieu du nom
+                // brut choisi par Mistral dans le JSON (ex: "offre-recrutement.
+                // component.ts" avec un tiret, alors que le dossier et les imports
+                // utilisent "offrerecrutement" sans tiret). Sans ça, app.routes.ts
+                // référence un fichier qui n'existe pas sous ce nom exact -> échec
+                // de build Vercel (TS2307). On ne touche PAS aux fichiers annexes
+                // (ex: un pipe personnalisé "file-size.pipe.ts") pour ne pas les
+                // écraser par erreur avec le nom du composant.
+                $normalizedFilename = $filename;
+                if (preg_match('/\.component\.(ts|html|css)$/', $filename, $extMatch)) {
+                    $normalizedFilename = "{$componentFolder}.component.{$extMatch[1]}";
+                    if ($normalizedFilename !== $filename) {
+                        \Log::warning("Nom de fichier normalisé: '{$filename}' -> '{$normalizedFilename}' pour correspondre au dossier '{$componentFolder}'.");
+                    }
+                }
+                $filePath = $componentDir . '/' . $normalizedFilename;
                 $filesToCommit[$filePath] = $code;
                 $writtenFiles[] = $filePath;
             }
