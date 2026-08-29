@@ -1,7 +1,5 @@
 <?php
-
 return [
-
     /*
     |--------------------------------------------------------------------------
     | Third Party Services
@@ -13,36 +11,32 @@ return [
     | a conventional file to locate the various service credentials.
     |
     */
-
     'postmark' => [
         'key' => env('POSTMARK_API_KEY'),
     ],
-
     'resend' => [
         'key' => env('RESEND_API_KEY'),
     ],
-
     'ses' => [
         'key' => env('AWS_ACCESS_KEY_ID'),
         'secret' => env('AWS_SECRET_ACCESS_KEY'),
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
-
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),
             'channel' => env('SLACK_BOT_USER_DEFAULT_CHANNEL'),
         ],
     ],
-
     'groq' => [
         'key' => env('GROQ_API_KEY'),
     ],
-
     'gemini' => [
         'key' => env('GEMINI_API_KEY'),
     ],
-
+    'mistral' => [
+        'key' => env('MISTRAL_API_KEY'),
+    ],
     // Repo GitHub de "generated-app" (Angular), déployé sur Vercel.
     'github' => [
         'token' => env('GITHUB_TOKEN'),
@@ -50,16 +44,14 @@ return [
         'repo'  => env('GITHUB_REPO_NAME'),
         'branch' => env('GITHUB_REPO_BRANCH', 'main'),
     ],
-
-    // Repo GitHub de "generator-back" (Laravel), déployé sur Railway.
+    // Repo GitHub de "generator-back" (Laravel), déployé sur Render.
     // Permet de committer les fichiers Laravel générés (controller, model,
-    // migration, routes) pour qu'ils survivent aux redéploiements Railway,
-    // au lieu d'exister uniquement sur le disque éphémère du conteneur.
+    // migration, routes) pour qu'ils survivent aux redémarrages/redéploiements
+    // du conteneur, au lieu d'exister uniquement sur le disque éphémère.
     'github_back' => [
         'token'  => env('GITHUB_BACK_TOKEN', env('GITHUB_TOKEN')),
         'owner'  => env('GITHUB_BACK_REPO_OWNER'),
         'repo'   => env('GITHUB_BACK_REPO_NAME'),
         'branch' => env('GITHUB_BACK_REPO_BRANCH', 'main'),
     ],
-
 ];
