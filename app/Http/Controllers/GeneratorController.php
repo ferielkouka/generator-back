@@ -44,8 +44,14 @@ class GeneratorController extends Controller
 
         $userMessage = $request->input('message');
         if (!empty($existingFiles)) {
-            $truncated = substr($existingFiles, 0, 200);
-            $userMessage .= "\n\n[FICHIERS ACTUELS]\n" . $truncated;
+            // ✅ FIX: 200 caractères ne montrait que les imports du fichier, jamais
+            // les vrais champs du formulaire (name/size/price, etc.) — Mistral
+            // régénérait donc un composant "générique" à chaque petite modification
+            // (ex: "change la couleur du bouton"), effaçant le schéma réel. Avec
+            // Mistral (500k tokens/min, contre 8k chez Groq), on peut se permettre
+            // une limite bien plus généreuse pour préserver le contexte réel.
+            $truncated = substr($existingFiles, 0, 6000);
+            $userMessage .= "\n\n[FICHIERS ACTUELS - préserve cette structure exacte (champs, noms de variables) sauf demande explicite de la changer]\n" . $truncated;
         }
 
         if ($this->detectFileUploadNeed($request->input('message'))) {
