@@ -1,1036 +1,308 @@
 <?php
 
-namespace App\Services;
+namespace App\Http\Controllers;
 
+use Illuminate\Http\Request;
+use App\Models\Project;
+use App\Models\Conversation;
+use App\Services\FileWriterService;
+use App\Services\ProjectLauncherService;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Database\Schema\Blueprint;
 
-class FileWriterService
+class GeneratorController extends Controller
 {
-    private string $angularPath;   // chemin RELATIF dans le repo GitHub (pas un chemin disque)
-    private string $laravelPath;
-    private GitHubWriterService $github;      // repo "app" (generated-app / Angular)
-    private GitHubWriterService $githubBack;  // repo "back" (generator-back / Laravel)
+    private FileWriterService $fileWriter;
+    private ProjectLauncherService $launcher;
 
-    public function __construct(GitHubWriterService $github)
+    public function __construct(FileWriterService $fileWriter, ProjectLauncherService $launcher)
     {
-        $this->angularPath = 'src/app';
-        $this->laravelPath = base_path();
-        $this->github = $github;
-
-        // Instance dédiée au repo "back", pour committer les fichiers Laravel générés
-        // et qu'ils survivent aux redémarrages/redéploiements du conteneur (Render en
-        // particulier redémarre très fréquemment sur le plan gratuit, ce qui efface
-        // sinon systématiquement le disque local à chaque fois).
-        $this->githubBack = new GitHubWriterService(
-            config('services.github_back.owner'),
-            config('services.github_back.repo'),
-            config('services.github_back.branch'),
-            config('services.github_back.token'),
-        );
+        $this->fileWriter = $fileWriter;
+        $this->launcher = $launcher;
     }
 
-    public function write(array $generated): array
+    public function generate(Request $request)
     {
-        $writtenFiles = [];
-        $action = $generated['action'] ?? 'create';
+        \Log::info('Request reçue', $request->all());
+        $request->validate(['message' => 'required|string']);
 
-        $this->fixEnvironment();
+        $project = \App\Models\Project::firstOrCreate(
+            ['name' => 'mon-projet'],
+            ['path' => base_path('../../generator-front')]
+        );
 
-        if (isset($generated['angular']['files'])) {
-            $componentName = $generated['angular']['component_name'];
-            $componentFolder = strtolower(str_replace('Component', '', $componentName));
-            $componentDir = $this->angularPath . '/' . $componentFolder;
+        \App\Models\Conversation::create([
+            'project_id' => $project->id,
+            'role'       => 'user',
+            'message'    => $request->input('message'),
+        ]);
 
-            $filesToCommit = [];
+        $feature = $this->detectFeature($request->input('message'));
+        $existingFiles = $this->fileWriter->readExistingFiles($feature);
 
-            foreach ($generated['angular']['files'] as $filename => $code) {
-                if (str_ends_with($filename, '.ts')) {
-                    $code = $this->cleanAngularCode($code);
-                    $code = $this->enforceComponentNameConsistency($code, $componentName, $componentFolder);
-                    $code = $this->fixAngularImports($code);
-                    $code = $this->fixAngularComponent($code);
-                    $code = $this->fixApiUrl($code);
-                    $code = $this->ensureEnvironmentExposed($code);
-                    $code = $this->fixDuplicateApiPath($code);
-                    $code = $this->fixSuccessMessage($code);
-                    $code = $this->fixCommonModule($code);
-                    $code = $this->fixArrayType($code);
-                    $code = $this->fixOptionalValueArithmetic($code);
-                    $code = $this->fixUpdateIdPattern($code);
-                    $code = $this->fixDirectUpdatePattern($code);
-                    $code = $this->ensureRequiredImports($code);
-                    $code = $this->balanceBraces($code);
-                } elseif (str_ends_with($filename, '.html')) {
-                    $code = $this->fixUpdateIdPatternHtml($code);
-                } elseif (str_ends_with($filename, '.css')) {
-                    $code = $this->ensureButtonStyles($code);
+        $userMessage = $request->input('message');
+        if (!empty($existingFiles)) {
+            // ✅ FIX: 200 caractères ne montrait que les imports du fichier, jamais
+            // les vrais champs du formulaire (name/size/price, etc.) — Mistral
+            // régénérait donc un composant "générique" à chaque petite modification
+            // (ex: "change la couleur du bouton"), effaçant le schéma réel. Avec
+            // Mistral (500k tokens/min, contre 8k chez Groq), on peut se permettre
+            // une limite bien plus généreuse pour préserver le contexte réel.
+            $truncated = substr($existingFiles, 0, 6000);
+            $userMessage .= "\n\n[FICHIERS ACTUELS - préserve cette structure exacte (champs, noms de variables) sauf demande explicite de la changer]\n" . $truncated;
+        }
+
+        if ($this->detectFileUploadNeed($request->input('message'))) {
+            $userMessage .= $this->getFileUploadInstructions();
+        }
+
+        $systemPrompt = $this->getSystemPrompt();
+
+        $maxRetries = 2;
+        $generated = null;
+        $rawJson = null;
+
+        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+
+            $currentUserMessage = $userMessage;
+            if ($attempt > 1) {
+                $currentUserMessage .= "\n\nIMPORTANT: Ta réponse précédente ne contenait pas la section \"laravel\" complète (controller, model, migration, routes). Tu DOIS impérativement inclure cette section cette fois-ci, en plus du code Angular.";
+            }
+
+            $mistralKey = config('services.mistral.key');
+            \Log::info('DEBUG clé Mistral - longueur: ' . strlen($mistralKey ?? '') . ', début: ' . substr($mistralKey ?? '', 0, 6) . ', fin: ' . substr($mistralKey ?? '', -4));
+
+            $response = \Illuminate\Support\Facades\Http::timeout(60)->withHeaders([
+                'Authorization' => 'Bearer ' . config('services.mistral.key'),
+                'Content-Type'  => 'application/json',
+            ])->post('https://api.mistral.ai/v1/chat/completions', [
+                'model'           => 'mistral-small-latest',
+                'messages'        => [
+                    ['role' => 'system', 'content' => $systemPrompt],
+                    ['role' => 'user', 'content' => $currentUserMessage],
+                ],
+                'max_tokens'      => 8000,
+                'response_format' => ['type' => 'json_object'],
+            ]);
+
+            \Log::info("Mistral response status (tentative {$attempt}): " . $response->status());
+
+            if ($response->status() === 429) {
+                return response()->json(['error' => 'Quota IA dépassé, réessaie dans quelques secondes.'], 429);
+            }
+
+            if (!$response->successful()) {
+                \Log::error("Mistral error body (tentative {$attempt}): " . $response->body());
+                if ($attempt === $maxRetries) {
+                    return response()->json(['error' => 'Erreur API Mistral: ' . $response->status()], 502);
                 }
-                $filePath = $componentDir . '/' . $filename;
-                $filesToCommit[$filePath] = $code;
-                $writtenFiles[] = $filePath;
+                continue;
             }
 
-            // Préparer app.config.ts dans le même commit groupé
-            $filesToCommit[$this->angularPath . '/app.config.ts'] = $this->getAppConfigContent();
-            $writtenFiles[] = $this->angularPath . '/app.config.ts';
+            $rawJson = $response->json('choices.0.message.content');
+            \Log::info("Raw JSON (tentative {$attempt}): " . $rawJson);
 
-            // Préparer app.routes.ts dans le même commit groupé (toujours vérifié, create ou update)
-            $updatedRoutes = $this->buildUpdatedRoutes($generated, $componentName, $componentFolder);
-            if ($updatedRoutes !== null) {
-                $filesToCommit[$this->angularPath . '/app.routes.ts'] = $updatedRoutes;
-                $writtenFiles[] = $this->angularPath . '/app.routes.ts';
+            $parsed = json_decode($rawJson, true);
+
+            if (!$parsed) {
+                \Log::error("JSON parse error (tentative {$attempt}): " . json_last_error_msg());
+                if ($attempt === $maxRetries) {
+                    return response()->json([
+                        'error' => 'Réponse IA invalide: ' . json_last_error_msg(),
+                        'raw'   => substr($rawJson, 0, 500)
+                    ], 422);
+                }
+                continue;
             }
 
-            // UN SEUL commit atomique pour tous les fichiers du composant + routes + config
-            $this->github->putFiles($filesToCommit, "Generate/update {$componentFolder} component");
+            $generated = $parsed;
+
+            // Normaliser les clés à points AVANT de vérifier si la section laravel est complète
+            if (isset($generated['angular.files'])) {
+                $generated['angular'] = [
+                    'component_name' => $generated['angular.component_name'] ?? '',
+                    'route'          => $generated['angular.route'] ?? '/',
+                    'files'          => $generated['angular.files'] ?? [],
+                ];
+            }
+
+            if (isset($generated['laravel.controller'])) {
+                $generated['laravel'] = [
+                    'controller' => $generated['laravel.controller'] ?? [],
+                    'model'      => $generated['laravel.model'] ?? [],
+                    'migration'  => $generated['laravel.migration'] ?? [],
+                    'routes'     => $generated['laravel.routes'] ?? '',
+                ];
+            }
+
+            $hasLaravel = !empty($generated['laravel']['controller']);
+
+            if ($hasLaravel) {
+                \Log::info("Section Laravel présente dès la tentative {$attempt}.");
+                break;
+            }
+
+            \Log::warning("Section Laravel manquante à la tentative {$attempt}, " . ($attempt < $maxRetries ? 'nouvelle tentative...' : 'abandon après max de tentatives.'));
         }
 
-        // Accumule tous les fichiers Laravel modifiés dans cette génération, pour un
-        // commit groupé unique sur le repo "back" à la fin de cette méthode. Chaque
-        // fichier est TOUJOURS écrit localement en plus (comportement inchangé), pour
-        // que le serveur en cours d'exécution en dispose immédiatement sans attendre
-        // le redéploiement déclenché par ce commit.
-        $laravelFilesToCommit = [];
-
-        if (isset($generated['laravel']['controller'])) {
-            $controllerRelPath = $generated['laravel']['controller']['file'];
-            $controllerPath = base_path($controllerRelPath);
-            File::ensureDirectoryExists(dirname($controllerPath));
-            $code = $generated['laravel']['controller']['code'];
-            $code = $this->deduplicatePhpBlock($code);
-            if (!str_starts_with(trim($code), '<?php')) {
-                $code = '<?php' . "\n\n" . $code;
-            }
-            $code = $this->ensureStorageImport($code);
-            if (File::exists($controllerPath)) {
-                $this->mergeController($controllerPath, $code);
-            } else {
-                File::put($controllerPath, $code);
-            }
-            $writtenFiles[] = $controllerPath;
-            $laravelFilesToCommit[$controllerRelPath] = $code;
+        if (empty($generated['angular']['files'])) {
+            \Log::error('IA na pas généré de code Angular !');
+            return response()->json([
+                'error' => 'L\'IA n\'a pas généré de code Angular - réessaie !',
+                'raw'   => substr($rawJson, 0, 500)
+            ], 422);
         }
+
+        $summary = sprintf(
+            'action:%s feature:%s files:%s',
+            $generated['action'] ?? 'create',
+            $generated['feature'] ?? 'unknown',
+            implode(',', array_keys($generated['angular']['files'] ?? []))
+        );
+
+        \App\Models\Conversation::create([
+            'project_id' => $project->id,
+            'role'       => 'assistant',
+            'message'    => $summary,
+        ]);
+
+        $writtenFiles = $this->fileWriter->write($generated);
 
         $table = $generated['database']['table'] ?? null;
+        $fields = $generated['database']['fields'] ?? [];
+
+        // ✅ FIX: crée la table si elle n'existe pas, OU synchronise les colonnes
+        // manquantes si elle existe déjà (évite les erreurs "Column not found"
+        // quand une feature est régénérée avec de nouveaux champs).
         if ($table) {
-            $modelName = ucfirst(rtrim($table, 's'));
-            $modelRelPath = "app/Models/{$modelName}.php";
-            $modelPath = base_path($modelRelPath);
-
-            $fields = $generated['database']['fields'] ?? [];
-            $fillable = array_filter($fields, fn($f) => !in_array($f, ['id', 'created_at', 'updated_at']));
-            $fillableStr = "'" . implode("', '", $fillable) . "'";
-
-            // ✅ FIX: on écrase TOUJOURS le model avec les champs actuels (comme le
-            // controller), au lieu de ne le créer qu'une seule fois. Sinon, un vieux
-            // model existant avec un $fillable obsolète (ex: d'une génération
-            // précédente avec d'autres champs) bloque SILENCIEUSEMENT l'assignation
-            // de masse des nouveaux champs — Article::create($request->all()) ignore
-            // sans erreur tout champ absent de $fillable, ce qui crée des lignes
-            // vides sans qu'aucune erreur n'apparaisse dans les logs.
-            $modelCode  = '<?php' . PHP_EOL . PHP_EOL;
-            $modelCode .= 'namespace App\Models;' . PHP_EOL . PHP_EOL;
-            $modelCode .= 'use Illuminate\Database\Eloquent\Model;' . PHP_EOL . PHP_EOL;
-            $modelCode .= 'class ' . $modelName . ' extends Model' . PHP_EOL;
-            $modelCode .= '{' . PHP_EOL;
-            $modelCode .= '    protected $table = \'' . $table . '\';' . PHP_EOL;
-            $modelCode .= '    protected $fillable = [' . $fillableStr . '];' . PHP_EOL;
-            $modelCode .= '}' . PHP_EOL;
-
-            File::put($modelPath, $modelCode);
-            $writtenFiles[] = $modelPath;
-            $laravelFilesToCommit[$modelRelPath] = $modelCode;
-            \Log::info("Model écrit (créé ou mis à jour): {$modelPath}");
-        }
-
-        if (isset($generated['laravel']['migration'])) {
-            $timestamp = date('Y_m_d_His');
-            $table = $generated['database']['table'] ?? 'unknown';
-            $existingLocal = glob(base_path("database/migrations/*_create_{$table}_table.php"));
-
-            // Vérifie aussi sur le repo GitHub "back" (pas seulement le disque local),
-            // car le disque local peut avoir été réinitialisé par un redémarrage récent
-            // alors que la migration existe déjà bel et bien sur GitHub.
-            $existingRemote = false;
-            foreach ($this->githubBack->listDirectory('database/migrations') as $item) {
-                if (($item['type'] ?? '') === 'file' && str_ends_with($item['name'] ?? '', "_create_{$table}_table.php")) {
-                    $existingRemote = true;
-                    break;
-                }
-            }
-
-            if (empty($existingLocal) && !$existingRemote) {
-                $migrationRelPath = "database/migrations/{$timestamp}_create_{$table}_table.php";
-                $migrationPath = base_path($migrationRelPath);
-                $migCode = $generated['laravel']['migration']['code'];
-                if (!str_starts_with(trim($migCode), '<?php')) {
-                    $migCode = '<?php' . "\n\n" . $migCode;
-                }
-                File::put($migrationPath, $migCode);
-                $writtenFiles[] = $migrationPath;
-                $laravelFilesToCommit[$migrationRelPath] = $migCode;
-            }
-        }
-
-        if (isset($generated['laravel']['routes'])) {
-            $this->addLaravelRoute($generated['laravel']['routes']);
-            $writtenFiles[] = base_path('routes/api.php');
-            // On committe le contenu final (déjà fusionné avec l'existant par addLaravelRoute)
-            $laravelFilesToCommit['routes/api.php'] = File::get(base_path('routes/api.php'));
-        }
-
-        $userModelChange = $this->patchUserModel();
-        if ($userModelChange !== null) {
-            $laravelFilesToCommit['app/Models/User.php'] = $userModelChange;
-        }
-
-        if (!empty($laravelFilesToCommit)) {
-            $featureLabel = $generated['feature'] ?? 'feature';
-            $this->githubBack->putFiles($laravelFilesToCommit, "Generate/update Laravel backend for {$featureLabel}");
-        }
-
-        return $writtenFiles;
-    }
-
-    private function fixArrayType(string $code): string
-    {
-        $code = preg_replace(
-            '/^(\s*)(\w+)\s*=\s*\[\];/m',
-            '$1$2: any[] = [];',
-            $code
-        );
-        return $code;
-    }
-
-    /**
-     * Force la cohérence entre le nom du composant attendu (déterminé par le dossier créé)
-     * et ce que le code TS contient réellement (classe, templateUrl, styleUrls, selector).
-     */
-    private function enforceComponentNameConsistency(string $code, string $expectedComponentName, string $componentFolder): string
-    {
-        if (!str_contains($code, '@Component')) {
-            return $code;
-        }
-
-        if (!preg_match('/export\s+class\s+(\w+)/', $code, $matches)) {
-            return $code;
-        }
-
-        $actualClassName = $matches[1];
-
-        if ($actualClassName === $expectedComponentName) {
-            return $code;
-        }
-
-        \Log::warning("Incohérence de nom de composant détectée: '{$actualClassName}' remplacé par '{$expectedComponentName}'.");
-
-        $code = preg_replace('/\b' . preg_quote($actualClassName, '/') . '\b/', $expectedComponentName, $code);
-
-        $code = preg_replace(
-            '/templateUrl\s*:\s*[\'"]\.\/[\w.-]+\.component\.html[\'"]/',
-            "templateUrl: './{$componentFolder}.component.html'",
-            $code
-        );
-        $code = preg_replace(
-            '/styleUrls\s*:\s*\[\s*[\'"]\.\/[\w.-]+\.component\.css[\'"]\s*\]/',
-            "styleUrls: ['./{$componentFolder}.component.css']",
-            $code
-        );
-
-        $code = preg_replace(
-            '/selector\s*:\s*[\'"]app-[\w-]+[\'"]/',
-            "selector: 'app-{$componentFolder}'",
-            $code
-        );
-
-        return $code;
-    }
-
-    /**
-     * Corrige les opérations arithmétiques utilisant .value avec optional chaining (?.value),
-     * qui provoquent des erreurs TypeScript (TS2533/TS2363) car la valeur peut être null/undefined.
-     */
-    private function fixOptionalValueArithmetic(string $code): string
-    {
-        // Ne cible que les cas où le ?.value est immédiatement suivi (après espaces optionnels)
-        // d'un opérateur arithmétique (* + - /), ce qui indique un vrai calcul, pas un simple envoi de valeur.
-        // Évite les faux positifs comme formData.append('title', this.form.get('title')?.value) qui ne doit
-        // JAMAIS être encapsulé dans Number().
-        $pattern = '/(?<!Number\()(\bthis\.\w+\.get\([\'"]\w+[\'"]\)\?\.value)(?=\s*[*+\-\/]\s*(?:this\.|\d))/';
-
-        $newCode = preg_replace_callback($pattern, function ($matches) {
-            return "Number({$matches[1]})";
-        }, $code);
-
-        if ($newCode !== $code) {
-            \Log::warning('Correctif appliqué: encapsulation Number() sur les valeurs ?.value utilisées dans des calculs.');
-        }
-
-        return $newCode;
-    }
-
-    /**
-     * Corrige le pattern défaillant où la méthode d'édition (onUpdate/onEdit/etc.) utilise
-     * this.form.get('id').value pour récupérer l'ID, alors que le FormGroup ne contient
-     * pas de champ 'id'. Fonctionne peu importe le nom de la méthode utilisée par Groq.
-     */
-    private function fixUpdateIdPattern(string $code): string
-    {
-        if (!str_contains($code, "form.get('id')")) {
-            return $code;
-        }
-
-        \Log::warning('Pattern défaillant form.get(id) détecté, correction automatique appliquée (ajout de selectedId).');
-
-        if (!str_contains($code, 'selectedId')) {
-            $code = preg_replace(
-                '/(\w+\s*:\s*any\[\]\s*=\s*\[\];)/',
-                "$1\n  selectedId: number | null = null;",
-                $code,
-                1
-            );
-        }
-
-        // Trouve n'importe quelle méthode (onUpdate, onEdit, editItem, etc.) qui fait patchValue(item)
-        // et lui ajoute la mémorisation de l'ID
-        $code = preg_replace_callback(
-            '/(on\w+|edit\w+)\(item:\s*any\)\s*\{\s*this\.form\.patchValue\(item\);\s*\}/i',
-            function ($matches) {
-                return "{$matches[1]}(item: any) {\n    this.selectedId = item.id;\n    this.form.patchValue(item);\n  }";
-            },
-            $code
-        );
-
-        // Remplace toutes les utilisations de this.form.get('id')?.value ou .value par this.selectedId
-        $code = preg_replace("/this\.form\.get\('id'\)\?\.\?value/", 'this.selectedId', $code);
-        $code = preg_replace("/this\.form\.get\('id'\)\.value/", 'this.selectedId', $code);
-        $code = preg_replace("/Number\(this\.selectedId\)/", 'this.selectedId', $code);
-
-        // Réinitialise selectedId après une mise à jour réussie (dans n'importe quelle méthode de submit)
-        $code = preg_replace(
-            '/(next:\s*\([^)]*\)\s*=>\s*\{[^}]*)(this\.form\.reset\(\);)/s',
-            '$1$2' . PHP_EOL . '        this.selectedId = null;',
-            $code
-        );
-
-        return $code;
-    }
-
-    /**
-     * Corrige le pattern défaillant où le bouton "Modifier" appelle directement
-     * une méthode qui PUT l'objet cliqué tel quel (sans jamais charger le formulaire),
-     * empêchant toute vraie modification des valeurs par l'utilisateur.
-     * Transforme en: onEdit() qui charge le form + onSubmit() qui POST ou PUT selon selectedId.
-     */
-    private function fixDirectUpdatePattern(string $code): string
-    {
-        if (!preg_match(
-            '/on(Update|Modify)\((\w+):\s*any\)\s*\{\s*this\.http\.put\(([^,]+),\s*\2\)\.subscribe/',
-            $code,
-            $m
-        )) {
-            return $code;
-        }
-
-        \Log::warning('Pattern défaillant "update direct sans formulaire" détecté, correction automatique appliquée.');
-
-        $methodName = 'on' . $m[1];
-        $itemVar = $m[2];
-        $putUrlExpr = trim($m[3]);
-
-        // Construit l'URL de base (sans l'ID concaténé) pour la réutiliser dans onSubmit
-        $baseUrlExpr = preg_replace("/\s*\+\s*" . preg_quote($itemVar, '/') . "\.id\s*$/", '', $putUrlExpr);
-
-        if (!str_contains($code, 'selectedId')) {
-            $code = preg_replace(
-                '/(\w+\s*:\s*any\[\]\s*=\s*\[\];)/',
-                "$1\n  selectedId: number | null = null;",
-                $code,
-                1
-            );
-        }
-
-        // Remplace l'ancienne méthode par une version qui charge le formulaire
-        $oldMethodPattern = '/' . preg_quote($methodName, '/') . '\(' . preg_quote($itemVar, '/') . ':\s*any\)\s*\{[^{}]*\{[^{}]*\}[^{}]*\}/s';
-        $newMethod = "onEdit({$itemVar}: any) {\n    this.selectedId = {$itemVar}.id;\n    this.form.patchValue({$itemVar});\n  }";
-        $newCode = preg_replace($oldMethodPattern, $newMethod, $code, 1);
-        if ($newCode !== null) {
-            $code = $newCode;
-        }
-
-        // Rend onSubmit() capable de POST ou PUT selon selectedId
-        $code = preg_replace_callback(
-            '/onSubmit\(\)\s*\{\s*this\.http\.post\(([^,]+),\s*this\.form\.value\)\.subscribe\(\{\s*next:\s*\(([^)]*)\)\s*=>\s*\{(.*?)\},\s*error:\s*\(([^)]*)\)\s*=>\s*([^}]*)\}\s*\}\);?\s*\}/s',
-            function ($sm) use ($baseUrlExpr) {
-                $postUrl = trim($sm[1]);
-                $nextParam = $sm[2];
-                $nextBody = $sm[3];
-                $errorParam = $sm[4];
-                $errorBody = $sm[5];
-
-                return "onSubmit() {\n"
-                    . "    if (this.selectedId) {\n"
-                    . "      this.http.put({$baseUrlExpr} + this.selectedId, this.form.value).subscribe({\n"
-                    . "        next: ({$nextParam}) => {{$nextBody}          this.selectedId = null;\n        },\n"
-                    . "        error: ({$errorParam}) => {$errorBody}\n"
-                    . "      });\n"
-                    . "    } else {\n"
-                    . "      this.http.post({$postUrl}, this.form.value).subscribe({\n"
-                    . "        next: ({$nextParam}) => {{$nextBody}},\n"
-                    . "        error: ({$errorParam}) => {$errorBody}\n"
-                    . "      });\n"
-                    . "    }\n"
-                    . "  }";
-            },
-            $code
-        );
-
-        return $code;
-    }
-
-    /**
-     * Corrige le HTML : remplace la condition d'affichage du bouton "Modifier"
-     * qui se base sur form.get('id')?.value (toujours faux) par selectedId.
-     * Corrige aussi les boutons qui appellent directement onUpdate(item)/onModify(item)
-     * pour qu'ils appellent onEdit(item) à la place (cohérent avec fixDirectUpdatePattern).
-     */
-    private function fixUpdateIdPatternHtml(string $code): string
-    {
-        if (str_contains($code, "form.get('id')")) {
-            \Log::warning('Correctif HTML appliqué: form.get(id) remplacé par selectedId.');
-            $code = preg_replace("/form\.get\('id'\)\?\.\?value/", 'selectedId', $code);
-            $code = preg_replace("/form\.get\('id'\)\.value/", 'selectedId', $code);
-        }
-
-        // Si le bouton appelle onUpdate(item) ou onModify(item) directement, bascule vers onEdit(item)
-        $code = preg_replace(
-            '/\(click\)="on(Update|Modify)\((\w+)\)"/',
-            '(click)="onEdit($2)"',
-            $code
-        );
-
-        return $code;
-    }
-
-    /**
-     * Ajoute un style par défaut aux boutons d'action (Modifier/Supprimer) dans la liste,
-     * si le CSS généré ne les stylise pas déjà.
-     */
-    private function ensureButtonStyles(string $code): string
-    {
-        if (str_contains($code, '.list-item button')) {
-            return $code;
-        }
-
-        $code .= <<<CSS
-
-
-.list-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.list-item button {
-  padding: 6px 14px;
-  border: none;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
-  margin-left: 6px;
-  color: white;
-}
-.list-item button:first-of-type {
-  background: linear-gradient(135deg, #17a2b8, #117a8b);
-}
-.list-item button:last-of-type {
-  background: linear-gradient(135deg, #dc3545, #a71d2a);
-}
-.list-item button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-}
-CSS;
-
-        return $code;
-    }
-
-    /**
-     * Ajoute les accolades fermantes manquantes en fin de fichier (garde-fou basique).
-     */
-    private function balanceBraces(string $code): string
-    {
-        $openCount = substr_count($code, '{');
-        $closeCount = substr_count($code, '}');
-
-        if ($openCount > $closeCount) {
-            $missing = $openCount - $closeCount;
-            \Log::warning("Fichier TS déséquilibré : {$missing} accolade(s) manquante(s), correction automatique appliquée.");
-            $code = rtrim($code) . PHP_EOL . str_repeat('}', $missing) . PHP_EOL;
-        }
-
-        return $code;
-    }
-
-    /**
-     * Vérifie que tous les symboles Angular utilisés (ReactiveFormsModule, FormsModule, etc.)
-     * ont bien leur import correspondant, peu importe où ils sont référencés dans le fichier.
-     */
-    private function ensureRequiredImports(string $code): string
-    {
-        $knownImports = [
-            'ReactiveFormsModule' => "@angular/forms",
-            'FormsModule'         => "@angular/forms",
-            'FormGroup'           => "@angular/forms",
-            'FormControl'         => "@angular/forms",
-            'Validators'          => "@angular/forms",
-            'CommonModule'        => "@angular/common",
-            'HttpClient'          => "@angular/common/http",
-            'Router'              => "@angular/router",
-            'RouterModule'        => "@angular/router",
-        ];
-
-        $byModule = [];
-
-        foreach ($knownImports as $symbol => $module) {
-            $isUsed = preg_match('/\b' . preg_quote($symbol, '/') . '\b/', $code);
-            $isImported = preg_match('/import\s*\{[^}]*\b' . preg_quote($symbol, '/') . '\b[^}]*\}\s*from\s*[\'"]' . preg_quote($module, '/') . '[\'"]/', $code);
-
-            if ($isUsed && !$isImported) {
-                $byModule[$module][] = $symbol;
-            }
-        }
-
-        if (!empty($byModule)) {
-            $newImportLines = '';
-            foreach ($byModule as $module => $symbols) {
-                $unique = array_unique($symbols);
-                $newImportLines .= "import { " . implode(', ', $unique) . " } from '{$module}';" . PHP_EOL;
-            }
-            $code = $newImportLines . $code;
-            \Log::warning("Imports manquants ajoutés automatiquement: " . json_encode($byModule));
-        }
-
-        return $code;
-    }
-
-    private function fixCommonModule(string $code): string
-    {
-        if (str_contains($code, 'CommonModule') && !str_contains($code, "from '@angular/common'")) {
-            $code = str_replace(
-                "import { Component",
-                "import { CommonModule } from '@angular/common';\nimport { Component",
-                $code
-            );
-        }
-
-        if (str_contains($code, 'ReactiveFormsModule') && !str_contains($code, "from '@angular/forms'")) {
-            $code = str_replace(
-                "import { Component",
-                "import { ReactiveFormsModule, FormGroup, FormControl } from '@angular/forms';\nimport { Component",
-                $code
-            );
-        }
-
-        if (!str_contains($code, 'CommonModule') && !str_contains($code, "from '@angular/common'")) {
-            $code = str_replace(
-                "import { Component",
-                "import { CommonModule } from '@angular/common';\nimport { Component",
-                $code
-            );
-            $code = preg_replace(
-                '/imports\s*:\s*\[([^\]]*)\]/',
-                'imports: [CommonModule, $1]',
-                $code
-            );
-            $code = preg_replace('/\[\s*,\s*/', '[', $code);
-        }
-
-        return $code;
-    }
-
-    private function fixSuccessMessage(string $code): string
-    {
-        $code = str_replace(
-            'console.log(r)',
-            "this.successMessage='✅ Données enregistrées avec succès !';this.form.reset()",
-            $code
-        );
-
-        if (!str_contains($code, 'successMessage')) {
-            $code = preg_replace(
-                '/(export class \w+ \{)/',
-                "$1\nsuccessMessage='';\n",
-                $code
-            );
-        }
-
-        return $code;
-    }
-
-    private function fixEnvironment(): void
-    {
-        $envPath = 'src/environment.ts';
-
-        if (!$this->github->fileExists($envPath)) {
-            $content  = 'export const environment = {' . PHP_EOL;
-            $content .= "  apiUrl: 'https://generator-back.onrender.com/api'" . PHP_EOL;
-            $content .= '};' . PHP_EOL;
-            $this->github->putFile($envPath, $content, 'Create environment.ts');
-        }
-    }
-
-    private function fixApiUrl(string $code): string
-    {
-        if (preg_match('/http:\/\/localhost:\d+\/api\/([^\'\"]+)/', $code)) {
-            $code = preg_replace(
-                "/['\"]http:\/\/localhost:\d+\/api\/([^'\"]+)['\"]/",
-                "environment.apiUrl + '/$1'",
-                $code
-            );
-        }
-
-        // Corrige aussi les URLs Railway complètes codées en dur, pour toujours passer par environment.apiUrl
-        $code = preg_replace(
-            "/['\"]https:\/\/generator-back-production\.up\.railway\.app\/api\/([^'\"]+)['\"]/",
-            "environment.apiUrl + '/$1'",
-            $code
-        );
-        $code = preg_replace(
-            '/`https:\/\/generator-back-production\.up\.railway\.app\/api\/([^`]+)`/',
-            'environment.apiUrl + `/$1`',
-            $code
-        );
-
-        if (str_contains($code, 'environment.apiUrl') && !str_contains($code, "from '../../environment'")) {
-            $code = str_replace(
-                "import { Component",
-                "import { environment } from '../../environment';\nimport { Component",
-                $code
-            );
-        }
-
-        return $code;
-    }
-
-    /**
-     * GARDE-FOU: si le fichier .ts importe "environment" (import { environment } from '../../environment')
-     * mais que la classe du composant ne l'expose pas comme propriété publique, alors toute utilisation de
-     * "environment.xxx" DIRECTEMENT DANS LE TEMPLATE HTML provoque une erreur de compilation Angular
-     * (TS2339: Property 'environment' does not exist on type 'XxxComponent'), car le HTML ne peut accéder
-     * qu'aux propriétés de la classe, jamais aux imports bruts du fichier .ts.
-     *
-     * On ajoute donc systématiquement "environment = environment;" comme première ligne de la classe
-     * dès que l'import est présent et que l'exposition ne l'est pas déjà — que le HTML l'utilise ou non,
-     * ce correctif est sans danger et évite tout crash de build sur les composants avec upload de fichiers
-     * (liens de téléchargement type environment.apiUrl + '/storage/...' dans le template).
-     */
-    private function ensureEnvironmentExposed(string $code): string
-    {
-        $hasImport = preg_match('/import\s*\{\s*environment\s*\}\s*from\s*[\'"][^\'"]+[\'"]/', $code);
-
-        if (!$hasImport) {
-            return $code;
-        }
-
-        // Déjà exposé sous une forme ou une autre (ex: "environment = environment;")
-        if (preg_match('/^\s*environment\s*=\s*environment\s*;/m', $code)) {
-            return $code;
-        }
-
-        if (!preg_match('/(export\s+class\s+\w+[^{]*\{)/', $code, $matches)) {
-            return $code;
-        }
-
-        \Log::warning("Propriété 'environment' non exposée à la classe détectée, ajout automatique de 'environment = environment;' pour éviter un crash de build (TS2339) si le template l'utilise.");
-
-        $classOpening = $matches[1];
-        $code = preg_replace(
-            '/' . preg_quote($classOpening, '/') . '/',
-            $classOpening . PHP_EOL . '  environment = environment;',
-            $code,
-            1
-        );
-
-        return $code;
-    }
-
-    /**
-     * Retire les doublons '/api/api/' causés par Groq qui ajoute parfois /api
-     * en plus de environment.apiUrl qui le contient déjà.
-     */
-    private function fixDuplicateApiPath(string $code): string
-    {
-        return str_replace("environment.apiUrl + '/api/", "environment.apiUrl + '/", $code);
-    }
-
-    /**
-     * Détecte et supprime les blocs PHP dupliqués que Groq génère parfois
-     * (le même controller répété plusieurs fois d'affilée dans le code renvoyé,
-     * chaque répétition recommençant par "<?php"), ce qui casse la syntaxe PHP
-     * et provoque une erreur fatale "Cannot redeclare class Xxx".
-     * Ne garde que la première occurrence complète.
-     */
-    private function deduplicatePhpBlock(string $code): string
-    {
-        // Compte les occurrences de "<?php" (avec ou sans namespace juste après)
-        $occurrences = substr_count($code, '<?php');
-
-        if ($occurrences <= 1) {
-            return $code;
-        }
-
-        // Coupe tout ce qui vient à partir de la 2e occurrence de "<?php"
-        $firstPos = strpos($code, '<?php');
-        $secondPos = strpos($code, '<?php', $firstPos + 5);
-
-        if ($secondPos !== false) {
-            \Log::warning("Code PHP dupliqué détecté ({$occurrences} occurrences de '<?php'), troncature au premier bloc.");
-            $code = substr($code, 0, $secondPos);
-        }
-
-        return rtrim($code);
-    }
-
-    private function mergeController(string $controllerPath, string $newCode): void
-    {
-        File::put($controllerPath, $newCode);
-        \Log::info("Controller écrasé: {$controllerPath}");
-    }
-
-    /**
-     * Ajoute automatiquement l'import de la façade Storage si le controller
-     * l'utilise (Storage::...) sans l'avoir importé, ce qui cause une erreur fatale
-     * "Class App\Http\Controllers\Storage not found".
-     */
-    private function ensureStorageImport(string $code): string
-    {
-        if (str_contains($code, 'Storage::') && !str_contains($code, 'use Illuminate\Support\Facades\Storage;')) {
-            \Log::warning('Import Storage manquant détecté, ajout automatique.');
-            $code = preg_replace(
-                '/(namespace App\\\\Http\\\\Controllers;)/',
-                "$1\n\nuse Illuminate\\Support\\Facades\\Storage;",
-                $code,
-                1
-            );
-        }
-        return $code;
-    }
-
-    /**
-     * Lit les fichiers existants du repo GitHub (au lieu du disque).
-     */
-    public function readExistingFiles(string $feature = ''): string
-    {
-        $result = '';
-        $items = $this->github->listDirectory($this->angularPath);
-
-        foreach ($items as $item) {
-            if (($item['type'] ?? '') !== 'dir') continue;
-
-            $folderName = $item['name'];
-            if (in_array($folderName, ['app', 'assets', 'environments'])) continue;
-            if (!empty($feature) && $folderName !== strtolower($feature)) continue;
-
-            $files = $this->github->listDirectory($this->angularPath . '/' . $folderName);
-            foreach ($files as $file) {
-                if (($file['type'] ?? '') !== 'file') continue;
-                $relativePath = $folderName . '/' . $file['name'];
-                $content = $this->github->getFile($this->angularPath . '/' . $folderName . '/' . $file['name']);
-                if ($content !== null) {
-                    $result .= "\n--- {$relativePath} ---\n{$content}\n";
-                }
-            }
-        }
-
-        return $result;
-    }
-
-    /**
-     * Liste les noms des dossiers de composants existants dans generated-app.
-     */
-    public function listGeneratedFolders(): array
-    {
-        $items = $this->github->listDirectory($this->angularPath);
-        $folders = [];
-
-        foreach ($items as $item) {
-            if (($item['type'] ?? '') !== 'dir') continue;
-            $folderName = $item['name'];
-            if (in_array($folderName, ['app', 'assets', 'environments'])) continue;
-            $folders[] = $folderName;
-        }
-
-        return $folders;
-    }
-
-    /**
-     * Construit le contenu mis à jour de app.routes.ts, sans l'écrire directement.
-     * Retourne null si aucune modification n'est nécessaire (route déjà présente).
-     */
-    private function buildUpdatedRoutes(array $generated, string $componentName, string $componentFolder): ?string
-    {
-        $route = ltrim($generated['angular']['route'] ?? $componentFolder, '/');
-        $routesPath = $this->angularPath . '/app.routes.ts';
-        $existingContent = $this->github->getFile($routesPath) ?? '';
-
-        if (str_contains($existingContent, "path: '{$route}'")) {
-            return null;
-        }
-
-        if (empty(trim($existingContent))) {
-            $content  = "import { Routes } from '@angular/router';" . PHP_EOL;
-            $content .= "import { {$componentName} } from './{$componentFolder}/{$componentFolder}.component';" . PHP_EOL . PHP_EOL;
-            $content .= "export const routes: Routes = [" . PHP_EOL;
-            $content .= "  { path: '', redirectTo: '/{$route}', pathMatch: 'full' }," . PHP_EOL;
-            $content .= "  { path: '{$route}', component: {$componentName} }" . PHP_EOL;
-            $content .= "];" . PHP_EOL;
-            return $content;
-        }
-
-        $importLine = "import { {$componentName} } from './{$componentFolder}/{$componentFolder}.component';";
-        if (!str_contains($existingContent, $importLine)) {
-            $existingContent = str_replace(
-                "import { Routes } from '@angular/router';",
-                "import { Routes } from '@angular/router';" . PHP_EOL . $importLine,
-                $existingContent
-            );
-        }
-
-        $protectedRoutes = ['dashboard', 'admin'];
-        $needsGuard = in_array($route, $protectedRoutes);
-
-        if ($needsGuard && !str_contains($existingContent, 'authGuard')) {
-            $existingContent = str_replace(
-                "import { Routes } from '@angular/router';",
-                "import { Routes } from '@angular/router';" . PHP_EOL . "import { authGuard } from './auth.guard';",
-                $existingContent
-            );
-        }
-
-        $newRoute = $needsGuard
-            ? "  { path: '{$route}', component: {$componentName}, canActivate: [authGuard] },"
-            : "  { path: '{$route}', component: {$componentName} },";
-
-        $existingContent = preg_replace(
-            '/export const routes: Routes = \[/',
-            "export const routes: Routes = [" . PHP_EOL . $newRoute,
-            $existingContent
-        );
-
-        return $existingContent;
-    }
-
-    private function addLaravelRoute(string $newRoutes): void
-    {
-        // Convertir les \n échappés littéralement (texte brut) en vrais retours à la ligne,
-        // au cas où Groq les envoie sous cette forme au lieu de vrais sauts de ligne.
-        $newRoutes = str_replace('\\n', "\n", $newRoutes);
-
-        $lines = array_filter(array_map('trim', explode("\n", $newRoutes)));
-
-        $anyAdded = false;
-        foreach ($lines as $line) {
-            $added = $this->addSingleLaravelRoute($line);
-            if ($added) {
-                $anyAdded = true;
-            }
-        }
-
-        if ($anyAdded) {
-            \Artisan::call('route:clear');
-            \Artisan::call('route:cache');
-            \Log::info('Cache des routes régénéré après ajout de ' . count($lines) . ' route(s).');
-        }
-    }
-
-    private function addSingleLaravelRoute(string $newRoute): bool
-    {
-        // Garde-fou supplémentaire: ignore toute ligne qui ne ressemble pas à une vraie déclaration de route
-        if (!preg_match('/^Route::\w+\(/', trim($newRoute))) {
-            \Log::warning("Ligne de route invalide ignorée: {$newRoute}");
-            return false;
-        }
-
-        $routesPath = base_path('routes/api.php');
-        $existingRoutes = File::get($routesPath);
-
-        $cleanRoute = preg_replace("/Route::(\w+)\('\/api\//", "Route::$1('/", $newRoute);
-
-        preg_match("/Route::(\w+)\('([^']+)'/", $cleanRoute, $matches);
-        $httpMethod = $matches[1] ?? '';
-        $routePath = $matches[2] ?? '';
-
-        $routeSignature = "Route::{$httpMethod}('{$routePath}'";
-        if (!empty($routePath) && str_contains($existingRoutes, $routeSignature)) {
-            \Log::info("Route déjà existante, ignorée: {$cleanRoute}");
-            return false;
-        }
-
-        preg_match('/\[(\w+)::class/', $cleanRoute, $controllerMatches);
-        $controllerName = $controllerMatches[1] ?? '';
-
-        if (!empty($controllerName) && !str_contains($existingRoutes, "use App\\Http\\Controllers\\{$controllerName}")) {
-            $existingRoutes = str_replace(
-                "use App\\Http\\Controllers\\AuthController;",
-                "use App\\Http\\Controllers\\AuthController;" . PHP_EOL . "use App\\Http\\Controllers\\{$controllerName};",
-                $existingRoutes
-            );
-        }
-
-        $existingRoutes .= PHP_EOL . $cleanRoute;
-        File::put($routesPath, $existingRoutes);
-
-        \Log::info("Route ajoutée: {$cleanRoute}");
-        return true;
-    }
-
-    /**
-     * Retourne le nouveau contenu de User.php si une modification a été appliquée
-     * (pour permettre de le committer sur le repo "back"), ou null si le fichier
-     * n'existe pas ou était déjà à jour.
-     */
-    private function patchUserModel(): ?string
-    {
-        $userModelPath = base_path('app/Models/User.php');
-        if (!File::exists($userModelPath)) return null;
-
-        $content = File::get($userModelPath);
-        if (!str_contains($content, 'HasApiTokens')) {
-            $content = str_replace(
-                "use Illuminate\\Foundation\\Auth\\User as Authenticatable;",
-                "use Illuminate\\Foundation\\Auth\\User as Authenticatable;" . PHP_EOL . "use Laravel\\Sanctum\\HasApiTokens;",
-                $content
-            );
-            $content = str_replace(
-                'use Notifiable;',
-                'use HasApiTokens, Notifiable;',
-                $content
-            );
-            File::put($userModelPath, $content);
-            return $content;
-        }
-
-        return null;
-    }
-
-    private function fixAngularImports(string $code): string
-    {
-        $code = preg_replace('/,?\s*HttpClientModule\s*,?/', '', $code);
-
-        $code = preg_replace_callback(
-            "/import\s*\{([^}]*)\}\s*from\s*'@angular\/common\/http';/",
-            function ($matches) {
-                $imports = $matches[1];
-                $formsModules = [];
-                $httpModules = [];
-                foreach (array_map('trim', explode(',', $imports)) as $imp) {
-                    $imp = trim($imp);
-                    if (empty($imp)) continue;
-                    if (in_array($imp, ['ReactiveFormsModule', 'FormsModule', 'FormGroup', 'FormControl', 'Validators'])) {
-                        $formsModules[] = $imp;
-                    } else {
-                        $httpModules[] = $imp;
-                    }
-                }
-                $result = '';
-                if (!empty($httpModules)) {
-                    $result .= "import { " . implode(', ', $httpModules) . " } from '@angular/common/http';";
-                }
-                if (!empty($formsModules)) {
-                    $result .= PHP_EOL . "import { " . implode(', ', $formsModules) . " } from '@angular/forms';";
-                }
-                return $result;
-            },
-            $code
-        );
-
-        if (str_contains($code, 'HttpClient') && !str_contains($code, "from '@angular/common/http'")) {
-            $code = "import { HttpClient } from '@angular/common/http';" . PHP_EOL . $code;
-        }
-
-        $code = preg_replace('/\[\s*,\s*/', '[', $code);
-        $code = preg_replace('/,\s*\]/', ']', $code);
-        $code = preg_replace('/,\s*,/', ',', $code);
-
-        return $code;
-    }
-
-    private function fixAngularComponent(string $code): string
-    {
-        if (str_contains($code, 'FormGroup') || str_contains($code, 'formGroup')) {
-
-            if (!str_contains($code, 'ReactiveFormsModule')) {
-                if (str_contains($code, "from '@angular/forms'")) {
-                    $code = preg_replace(
-                        "/import\s*\{([^}]*)\}\s*from\s*'@angular\/forms'/",
-                        "import { ReactiveFormsModule, \$1 } from '@angular/forms'",
-                        $code
-                    );
+            try {
+                if (!Schema::hasTable($table)) {
+                    Schema::create($table, function (Blueprint $t) use ($fields) {
+                        $t->id();
+                        foreach ($fields as $field) {
+                            if (in_array($field, ['id', 'created_at', 'updated_at'])) continue;
+                            $t->string($field)->nullable();
+                        }
+                        $t->timestamps();
+                    });
+                    \Log::info("Table créée: {$table}");
                 } else {
-                    $code = "import { ReactiveFormsModule, FormGroup, FormControl, Validators } from '@angular/forms';" . PHP_EOL . $code;
+                    Schema::table($table, function (Blueprint $t) use ($fields, $table) {
+                        foreach ($fields as $field) {
+                            if (in_array($field, ['id', 'created_at', 'updated_at'])) continue;
+                            if (!Schema::hasColumn($table, $field)) {
+                                $t->string($field)->nullable();
+                            }
+                        }
+                    });
+                    \Log::info("Colonnes synchronisées: {$table}");
                 }
-            }
-
-            $code = preg_replace(
-                '/imports\s*:\s*\[\s*\]/',
-                'imports: [ReactiveFormsModule]',
-                $code
-            );
-
-            if (!preg_match('/imports\s*:\s*\[.*ReactiveFormsModule.*\]/s', $code)) {
-                $code = preg_replace(
-                    '/imports\s*:\s*\[([^\]]*)\]/',
-                    'imports: [ReactiveFormsModule, $1]',
-                    $code
-                );
-                $code = preg_replace('/\[\s*,\s*/', '[', $code);
+            } catch (\Exception $e) {
+                \Log::error('Schema error: ' . $e->getMessage());
             }
         }
 
-        return $code;
+        return response()->json([
+            'success'       => true,
+            'feature'       => $generated['feature'] ?? 'unknown',
+            'action'        => $generated['action'] ?? 'create',
+            'generated'     => $generated,
+            'files_written' => $writtenFiles,
+        ]);
     }
 
-    private function getAppConfigContent(): string
+    private function detectFeature(string $message): string
     {
-        return <<<'TS'
-import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
-import { provideRouter } from '@angular/router';
-import { provideHttpClient, withInterceptors, HttpInterceptorFn } from '@angular/common/http';
-import { routes } from './app.routes';
+        $message = strtolower($message);
+        $items = $this->fileWriter->listGeneratedFolders();
 
-const authInterceptor: HttpInterceptorFn = (req, next) => {
-  const token = localStorage.getItem('token');
-  if (token) {
-    const authReq = req.clone({
-      headers: req.headers.set('Authorization', `Bearer ${token}`)
-    });
-    return next(authReq);
-  }
-  return next(req);
-};
+        foreach ($items as $folderName) {
+            if (str_contains($message, $folderName)) {
+                return $folderName;
+            }
+        }
 
-export const appConfig: ApplicationConfig = {
-  providers: [
-    provideBrowserGlobalErrorListeners(),
-    provideRouter(routes),
-    provideHttpClient(withInterceptors([authInterceptor])),
-  ]
-};
-TS;
+        // Aucune correspondance trouvée : c'est une NOUVELLE feature.
+        // Retourner '' plutôt que $items[0] pour éviter d'injecter par erreur
+        // le contenu d'une feature existante non liée dans le prompt (ce qui
+        // poussait Mistral à réutiliser/écraser cette feature au hasard).
+        return '';
     }
 
-    private function cleanAngularCode(string $code): string
+    /**
+     * Détecte si la demande implique un upload de fichier (PDF, image, document),
+     * et enrichit le message avec des instructions précises pour que l'IA génère
+     * un vrai formulaire multipart fonctionnel (Angular FormData + Laravel Storage).
+     */
+    private function detectFileUploadNeed(string $message): bool
     {
-        $code = preg_replace('/import\s*\{[^}]*(?:AuthService|UserService|DataService|ApiService|BlogService|ProductService|ClientService)[^}]*\}\s*from\s*[\'"][^\'\"]+[\'"];\n?/', '', $code);
-        $code = preg_replace('/,?\s*private\s+\w+(?:Service|Helper)\s*:\s*\w+(?:Service|Helper)\s*,?/', '', $code);
-        $code = preg_replace('/\(\s*,\s*/', '(', $code);
-        $code = preg_replace('/,\s*,/', ',', $code);
-        $code = preg_replace('/,\s*\)/', ')', $code);
+        $keywords = ['fichier', 'upload', 'pdf', 'image', 'photo', 'document', 'pièce jointe', 'télécharger'];
+        $message = strtolower($message);
 
-        return $code;
+        foreach ($keywords as $keyword) {
+            if (str_contains($message, $keyword)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function getFileUploadInstructions(): string
+    {
+        return <<<'TXT'
+
+CRITICAL - FILE UPLOAD REQUEST. Do NOT use FormControl for file fields. Instead:
+- Add one "selectedFileX: File | null = null" property per file field, and an "onFileXSelected(event)" method that sets it from event.target.files[0].
+- In the HTML, use <input type="file" (change)="onFileXSelected($event)"/> (no formControlName) for each file field.
+- In onSubmit(), build a "new FormData()", append text fields via form.get(field)?.value and each file via its selectedFileX, then POST/PUT the FormData directly (not this.form.value).
+- Laravel controller: add "use Illuminate\Support\Facades\Storage;" after the namespace line. For each file field, if ($request->hasFile('field_name')) store it with $request->file('field_name')->store('uploads', 'public') and put the returned path into the data array before Model::create()/update().
+- Migration columns for files are nullable strings, named in snake_case exactly matching the FormData field names.
+TXT;
+    }
+
+    private function getSystemPrompt(): string
+    {
+        return <<<'PROMPT'
+You are a code generator. Output ONLY this JSON structure with real code:
+
+{
+  "feature": "name",
+  "action": "create",
+  "angular": {
+    "component_name": "XxxComponent",
+    "route": "/xxx",
+    "files": {
+      "xxx.component.ts": "import { Component, OnInit } from '@angular/core';\nimport { CommonModule } from '@angular/common';\nimport { ReactiveFormsModule, FormGroup, FormControl } from '@angular/forms';\nimport { HttpClient } from '@angular/common/http';\nimport { Router } from '@angular/router';\nimport { environment } from '../../environment';\n\n@Component({\n  selector: 'app-xxx',\n  standalone: true,\n  imports: [CommonModule, ReactiveFormsModule],\n  templateUrl: './xxx.component.html',\n  styleUrls: ['./xxx.component.css']\n})\nexport class XxxComponent implements OnInit {\n  successMessage = '';\n  items: any[] = [];\n  selectedId: number | null = null;\n  form = new FormGroup({\n    field: new FormControl('')\n  });\n\n  constructor(private http: HttpClient, private router: Router) {}\n\n  ngOnInit() {\n    this.http.get(environment.apiUrl + '/xxx').subscribe({\n      next: (r: any) => { this.items = r; },\n      error: (e: any) => console.error(e)\n    });\n  }\n\n  onSubmit() {\n    if (this.selectedId) {\n      this.http.put(environment.apiUrl + '/xxx/' + this.selectedId, this.form.value).subscribe({\n        next: (r: any) => {\n          this.successMessage = '✅ Mis à jour avec succès !';\n          this.form.reset();\n          this.items = this.items.map((i: any) => i.id === this.selectedId ? r : i);\n          this.selectedId = null;\n        },\n        error: (e: any) => console.error(e)\n      });\n    } else {\n      this.http.post(environment.apiUrl + '/xxx', this.form.value).subscribe({\n        next: (r: any) => {\n          this.successMessage = '✅ Données enregistrées avec succès !';\n          this.form.reset();\n          this.items.push(r);\n        },\n        error: (e: any) => console.error(e)\n      });\n    }\n  }\n\n  onEdit(item: any) {\n    this.selectedId = item.id;\n    this.form.patchValue(item);\n  }\n\n  onDelete(id: number) {\n    this.http.delete(environment.apiUrl + '/xxx/' + id).subscribe({\n      next: () => {\n        this.items = this.items.filter((i: any) => i.id !== id);\n        this.successMessage = '✅ Supprimé avec succès !';\n      },\n      error: (e: any) => console.error(e)\n    });\n  }\n}",
+      "xxx.component.html": "<div class=\"container\">\n  <h2>Title</h2>\n  <div *ngIf=\"successMessage\" class=\"success-msg\">{{successMessage}}</div>\n  <form [formGroup]=\"form\" (ngSubmit)=\"onSubmit()\">\n    <div class=\"form-group\">\n      <label>Field</label>\n      <input formControlName=\"field\" type=\"text\"/>\n    </div>\n    <button type=\"submit\">{{ selectedId ? 'Modifier' : 'Ajouter' }}</button>\n  </form>\n  <div class=\"list-container\">\n    <div *ngFor=\"let item of items\" class=\"list-item\">\n      <strong>{{item.field}}</strong>\n      <div class=\"actions\">\n        <button (click)=\"onEdit(item)\">Modifier</button>\n        <button (click)=\"onDelete(item.id)\">Supprimer</button>\n      </div>\n    </div>\n  </div>\n</div>",
+      "xxx.component.css": "* { box-sizing: border-box; margin: 0; padding: 0; }\n.container { width: 500px; margin: 60px auto; padding: 30px; background: white; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }\n.success-msg { background: #d4edda; color: #155724; padding: 12px; border-radius: 8px; margin-bottom: 20px; text-align: center; }\n.form-group { margin-bottom: 20px; }\n.form-group input { width: 100%; padding: 10px 14px; border: 2px solid #e1e5e9; border-radius: 8px; }\nbutton[type=submit] { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; }\n.list-item { display: flex; justify-content: space-between; padding: 15px; background: #f8f9fa; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #007bff; }\n.actions button { padding: 6px 14px; border: none; border-radius: 6px; color: white; margin-left: 6px; cursor: pointer; }\n.actions button:first-child { background: #17a2b8; }\n.actions button:last-child { background: #dc3545; }"
+    }
+  },
+  "laravel": {
+    "controller": {"name":"XxxController","file":"app/Http/Controllers/XxxController.php","code":"<?php\nnamespace App\\Http\\Controllers;\nuse Illuminate\\Http\\Request;\nuse App\\Models\\Xxx;\n\nclass XxxController extends Controller\n{\n  public function index()\n  {\n    return response()->json(Xxx::all());\n  }\n\n  public function store(Request $request)\n  {\n    $item = Xxx::create($request->all());\n    return response()->json($item, 201);\n  }\n\n  public function update(Request $request, $id)\n  {\n    $item = Xxx::findOrFail($id);\n    $item->update($request->all());\n    return response()->json($item);\n  }\n\n  public function destroy($id)\n  {\n    Xxx::destroy($id);\n    return response()->json(['message' => 'Deleted']);\n  }\n}"},
+    "model": {"name":"Xxx","file":"app/Models/Xxx.php","code":"<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\n\nclass Xxx extends Model\n{\n  protected $fillable = ['field'];\n}"},
+    "migration": {"file":"database/migrations/2024_01_01_create_xxx_table.php","code":"<?php\nuse Illuminate\\Database\\Migrations\\Migration;\nuse Illuminate\\Database\\Schema\\Blueprint;\nuse Illuminate\\Support\\Facades\\Schema;\n\nreturn new class extends Migration\n{\n  public function up(): void\n  {\n    Schema::create('xxx', function (Blueprint $table) {\n      $table->id();\n      $table->string('field');\n      $table->timestamps();\n    });\n  }\n\n  public function down(): void\n  {\n    Schema::dropIfExists('xxx');\n  }\n};"},
+    "routes": "Route::get('/xxx',[XxxController::class,'index']);\nRoute::post('/xxx',[XxxController::class,'store']);\nRoute::put('/xxx/{id}',[XxxController::class,'update']);\nRoute::delete('/xxx/{id}',[XxxController::class,'destroy']);"
+  },
+  "database": {"table":"xxx","fields":["id","field","created_at","updated_at"]}
+}
+
+Replace xxx/Xxx with the actual feature name and fields.
+Always use environment.apiUrl for API calls, never hardcode the full URL, never add '/api' prefix since environment.apiUrl already includes it.
+Always import CommonModule and add to imports array.
+Always include ReactiveFormsModule in imports array.
+Always add successMessage='' and items: any[] = [] properties.
+Always add selectedId: number | null = null property for edit/update tracking.
+Always load items in ngOnInit with GET request.
+CRITICAL UPDATE PATTERN: onSubmit() must check "if (this.selectedId)" to decide between PUT (update) and POST (create). NEVER put an object directly in http.put() from a button click without first loading it into the form via an onEdit(item) method that sets selectedId and calls form.patchValue(item).
+Always provide an onEdit(item) method that sets this.selectedId = item.id and calls this.form.patchValue(item), for every component with edit/update capability.
+Always reset selectedId to null after a successful update.
+Always show success message with *ngIf="successMessage".
+For CRUD components (with edit/delete), ALWAYS generate exactly 4 Laravel routes: GET (index), POST (store), PUT with {id} (update), DELETE with {id} (destroy). Output each route on its own line separated by a real newline character, never as literal backslash-n text.
+Expand the CSS example above with gradients, box-shadows, hover transitions and better spacing — the example is minimal, make it visually polished, but keep the same class names and structure.
+AuthController ALWAYS has BOTH login() AND register() methods.
+PROMPT;
     }
 }
