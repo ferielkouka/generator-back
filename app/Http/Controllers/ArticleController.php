@@ -1,31 +1,44 @@
 <?php
 namespace App\Http\Controllers;
+
 use Illuminate\Http\Request;
 use App\Models\Article;
 
 class ArticleController extends Controller
 {
-  public function index()
-  {
-    return response()->json(Article::all());
-  }
+    public function index()
+    {
+        return response()->json(Article::all());
+    }
 
-  public function store(Request $request)
-  {
-    $item = Article::create($request->all());
-    return response()->json($item, 201);
-  }
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            'size' => 'required|string|max:10',
+            'price' => 'required|numeric|min:0'
+        ]);
 
-  public function update(Request $request, $id)
-  {
-    $item = Article::findOrFail($id);
-    $item->update($request->all());
-    return response()->json($item);
-  }
+        $article = Article::create($validated);
+        return response()->json($article, 201);
+    }
 
-  public function destroy($id)
-  {
-    Article::destroy($id);
-    return response()->json(['message' => 'Deleted']);
-  }
+    public function update(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            'size' => 'required|string|max:10',
+            'price' => 'required|numeric|min:0'
+        ]);
+
+        $article = Article::findOrFail($id);
+        $article->update($validated);
+        return response()->json($article);
+    }
+
+    public function destroy($id)
+    {
+        Article::destroy($id);
+        return response()->json(['message' => 'Article supprimé avec succès']);
+    }
 }
