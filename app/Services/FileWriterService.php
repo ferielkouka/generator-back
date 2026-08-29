@@ -117,25 +117,30 @@ class FileWriterService
             $modelRelPath = "app/Models/{$modelName}.php";
             $modelPath = base_path($modelRelPath);
 
-            if (!File::exists($modelPath)) {
-                $fields = $generated['database']['fields'] ?? [];
-                $fillable = array_filter($fields, fn($f) => !in_array($f, ['id', 'created_at', 'updated_at']));
-                $fillableStr = "'" . implode("', '", $fillable) . "'";
+            $fields = $generated['database']['fields'] ?? [];
+            $fillable = array_filter($fields, fn($f) => !in_array($f, ['id', 'created_at', 'updated_at']));
+            $fillableStr = "'" . implode("', '", $fillable) . "'";
 
-                $modelCode  = '<?php' . PHP_EOL . PHP_EOL;
-                $modelCode .= 'namespace App\Models;' . PHP_EOL . PHP_EOL;
-                $modelCode .= 'use Illuminate\Database\Eloquent\Model;' . PHP_EOL . PHP_EOL;
-                $modelCode .= 'class ' . $modelName . ' extends Model' . PHP_EOL;
-                $modelCode .= '{' . PHP_EOL;
-                $modelCode .= '    protected $table = \'' . $table . '\';' . PHP_EOL;
-                $modelCode .= '    protected $fillable = [' . $fillableStr . '];' . PHP_EOL;
-                $modelCode .= '}' . PHP_EOL;
+            // ✅ FIX: on écrase TOUJOURS le model avec les champs actuels (comme le
+            // controller), au lieu de ne le créer qu'une seule fois. Sinon, un vieux
+            // model existant avec un $fillable obsolète (ex: d'une génération
+            // précédente avec d'autres champs) bloque SILENCIEUSEMENT l'assignation
+            // de masse des nouveaux champs — Article::create($request->all()) ignore
+            // sans erreur tout champ absent de $fillable, ce qui crée des lignes
+            // vides sans qu'aucune erreur n'apparaisse dans les logs.
+            $modelCode  = '<?php' . PHP_EOL . PHP_EOL;
+            $modelCode .= 'namespace App\Models;' . PHP_EOL . PHP_EOL;
+            $modelCode .= 'use Illuminate\Database\Eloquent\Model;' . PHP_EOL . PHP_EOL;
+            $modelCode .= 'class ' . $modelName . ' extends Model' . PHP_EOL;
+            $modelCode .= '{' . PHP_EOL;
+            $modelCode .= '    protected $table = \'' . $table . '\';' . PHP_EOL;
+            $modelCode .= '    protected $fillable = [' . $fillableStr . '];' . PHP_EOL;
+            $modelCode .= '}' . PHP_EOL;
 
-                File::put($modelPath, $modelCode);
-                $writtenFiles[] = $modelPath;
-                $laravelFilesToCommit[$modelRelPath] = $modelCode;
-                \Log::info("Model créé: {$modelPath}");
-            }
+            File::put($modelPath, $modelCode);
+            $writtenFiles[] = $modelPath;
+            $laravelFilesToCommit[$modelRelPath] = $modelCode;
+            \Log::info("Model écrit (créé ou mis à jour): {$modelPath}");
         }
 
         if (isset($generated['laravel']['migration'])) {
