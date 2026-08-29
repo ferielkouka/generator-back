@@ -99,3 +99,5 @@ Route::put('/document/{id}',[DocumentController::class,'update']);
 Route::delete('/document/{id}',[DocumentController::class,'destroy']);
 Route::put('/article/{id}',[ArticleController::class,'update']);
 Route::delete('/article/{id}',[ArticleController::class,'destroy']);
+Route::put('/articles/{id}',[ArticleController::class,'update']);
+Route::delete('/articles/{id}',[ArticleController::class,'destroy']);
