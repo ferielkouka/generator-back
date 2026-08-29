@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
@@ -25,13 +26,14 @@ class ArticleController extends Controller
 
     public function update(Request $request, $id)
     {
+        $article = Article::findOrFail($id);
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'size' => 'required|in:S,M,L,XL,XXL',
             'price' => 'required|numeric|min:0'
         ]);
 
-        $article = Article::findOrFail($id);
         $article->update($validated);
         return response()->json($article);
     }
