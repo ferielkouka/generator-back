@@ -30,8 +30,11 @@ RUN chmod -R 775 storage bootstrap/cache
 
 EXPOSE 10000
 
-# Au démarrage : migrations + cache config + lancement du serveur
+# Au démarrage : cache config + migrations (non-bloquant, car les tables sont
+# déjà créées/synchronisées directement en code via Schema::create/Schema::table
+# dans GeneratorController — une migration en conflit ne doit jamais empêcher
+# le serveur de démarrer) + lancement du serveur.
 # $PORT est fourni automatiquement par Render
 CMD php artisan config:cache && \
-    php artisan migrate --force && \
+    (php artisan migrate --force || true) && \
     php artisan serve --host 0.0.0.0 --port ${PORT:-10000}
