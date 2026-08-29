@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\GeneratorController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\NoteController;
 use App\Http\Controllers\EnseignantController;
 use App\Http\Controllers\StatistiquesController;
 use App\Http\Controllers\DashboardController;
@@ -77,3 +78,8 @@ Route::post('/enseignants',[EnseignantController::class,'store']);
 Route::get('/enseignants',[EnseignantController::class,'index']);
 Route::put('/enseignants/{id}',[EnseignantController::class,'update']);
 Route::delete('/enseignants/{id}',[EnseignantController::class,'destroy']);
+
+Route::get('/notes',[NoteController::class,'index']);
+Route::post('/notes',[NoteController::class,'store']);
+Route::put('/notes/{id}',[NoteController::class,'update']);
+Route::delete('/notes/{id}',[NoteController::class,'destroy']);
