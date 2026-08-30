@@ -215,19 +215,41 @@ class GeneratorController extends Controller
 
     private function detectFeature(string $message): string
     {
-        $message = strtolower($message);
+        $lowerMessage = strtolower($message);
         $items = $this->fileWriter->listGeneratedFolders();
 
         foreach ($items as $folderName) {
-            if (str_contains($message, $folderName)) {
+            if (str_contains($lowerMessage, $folderName)) {
                 return $folderName;
             }
         }
 
-        // Aucune correspondance trouvée : c'est une NOUVELLE feature.
-        // Retourner '' plutôt que $items[0] pour éviter d'injecter par erreur
-        // le contenu d'une feature existante non liée dans le prompt (ce qui
-        // poussait Mistral à réutiliser/écraser cette feature au hasard).
+        // ✅ Si la demande ressemble clairement à une CRÉATION explicite d'une
+        // nouvelle feature ("je veux ajouter un/une X avec..."), on ne retombe
+        // JAMAIS sur la dernière feature — même sans mot-clé correspondant, il
+        // s'agit d'un nouveau projet, pas d'une modification. Sinon on récupérerait
+        // par erreur le contexte d'une feature existante non liée, recréant le bug
+        // où Mistral réutilisait/écrasait une feature au hasard.
+        $isCreationRequest = (bool) preg_match('/\bje\s+veux\s+ajouter\b/', $lowerMessage);
+        if ($isCreationRequest) {
+            return '';
+        }
+
+        // Sinon (demande de modification sans nom de feature explicite, ex: "change
+        // la couleur du bouton ajouter en bleu") -> on retombe sur la DERNIÈRE
+        // feature générée, comportement attendu par l'utilisateur. On lit ça depuis
+        // la table "conversations" (MySQL, persistant) plutôt que depuis le disque
+        // local ou un cache mémoire, qui ne survivent pas aux redémarrages fréquents
+        // du conteneur Render.
+        $lastAssistantMessage = \App\Models\Conversation::where('role', 'assistant')
+            ->orderByDesc('id')
+            ->value('message');
+
+        if ($lastAssistantMessage && preg_match('/feature:(\S+)/', $lastAssistantMessage, $m)) {
+            \Log::info("Aucune feature explicite dans le message, utilisation de la dernière feature générée: '{$m[1]}'.");
+            return $m[1];
+        }
+
         return '';
     }
 
