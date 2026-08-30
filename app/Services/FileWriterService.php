@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 
 class FileWriterService
 {
@@ -130,7 +131,18 @@ class FileWriterService
 
         $table = $generated['database']['table'] ?? null;
         if ($table) {
-            $modelName = ucfirst(rtrim($table, 's'));
+            // ✅ FIX: on utilise le nom de classe que Mistral a EXPLICITEMENT fourni
+            // dans generated.laravel.model.name (celui-là même que le controller
+            // référence via "use App\Models\Xxx;"), au lieu de le recalculer nous-
+            // mêmes depuis le nom de la table. L'ancien calcul
+            // ucfirst(rtrim($table, 's')) ne gérait que les tables en un seul mot
+            // (ex: "notes" -> "Note") et cassait dès qu'il y avait un underscore
+            // (ex: "team_members" -> "Team_member" au lieu de "TeamMember"),
+            // provoquant une erreur fatale "Class App\Models\Xxx not found" au
+            // moment de l'insertion, car le controller référence un nom de classe
+            // différent de celui du fichier réellement écrit sur le disque.
+            $modelName = $generated['laravel']['model']['name']
+                ?? Str::studly(Str::singular($table));
             $modelRelPath = "app/Models/{$modelName}.php";
             $modelPath = base_path($modelRelPath);
 
