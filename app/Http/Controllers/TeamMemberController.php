@@ -14,9 +14,9 @@ class TeamMemberController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'role' => 'required|string|max:255',
-            'email' => 'required|email|max:255'
+            'name' => 'required|string|min:2',
+            'role' => 'required|string|min:2',
+            'email' => 'required|email'
         ]);
 
         $item = TeamMember::create($validated);
@@ -26,9 +26,9 @@ class TeamMemberController extends Controller
     public function update(Request $request, $id)
     {
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'role' => 'required|string|max:255',
-            'email' => 'required|email|max:255'
+            'name' => 'required|string|min:2',
+            'role' => 'required|string|min:2',
+            'email' => 'required|email'
         ]);
 
         $item = TeamMember::findOrFail($id);
