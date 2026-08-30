@@ -229,20 +229,23 @@ class FileWriterService
             return $code;
         }
 
-        if (!preg_match('/export\s+class\s+(\w+)/', $code, $matches)) {
-            return $code;
+        if (preg_match('/export\s+class\s+(\w+)/', $code, $matches)) {
+            $actualClassName = $matches[1];
+
+            if ($actualClassName !== $expectedComponentName) {
+                \Log::warning("Incohérence de nom de composant détectée: '{$actualClassName}' remplacé par '{$expectedComponentName}'.");
+                $code = preg_replace('/\b' . preg_quote($actualClassName, '/') . '\b/', $expectedComponentName, $code);
+            }
         }
 
-        $actualClassName = $matches[1];
-
-        if ($actualClassName === $expectedComponentName) {
-            return $code;
-        }
-
-        \Log::warning("Incohérence de nom de composant détectée: '{$actualClassName}' remplacé par '{$expectedComponentName}'.");
-
-        $code = preg_replace('/\b' . preg_quote($actualClassName, '/') . '\b/', $expectedComponentName, $code);
-
+        // ✅ FIX: ces 3 remplacements s'appliquent TOUJOURS (plus seulement quand le
+        // nom de classe est incohérent). Le nom de fichier physique du composant est
+        // désormais toujours normalisé vers $componentFolder (voir write()), donc
+        // templateUrl/styleUrls doivent l'être aussi systématiquement — même quand
+        // Mistral avait déjà choisi le bon nom de classe, il peut avoir utilisé un
+        // nom de fichier différent (ex: avec un tiret) dans templateUrl/styleUrls,
+        // ce qui casse le build Vercel (NG2008: template file not found) si on ne
+        // corrige pas ces lignes dans ce cas-là aussi.
         $code = preg_replace(
             '/templateUrl\s*:\s*[\'"]\.\/[\w.-]+\.component\.html[\'"]/',
             "templateUrl: './{$componentFolder}.component.html'",
