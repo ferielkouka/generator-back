@@ -121,3 +121,7 @@ Route::get('/team-members',[TeamMemberController::class,'index']);
 Route::post('/team-members',[TeamMemberController::class,'store']);
 Route::put('/team-members/{id}',[TeamMemberController::class,'update']);
 Route::delete('/team-members/{id}',[TeamMemberController::class,'destroy']);
+Route::get('/team-member',[TeamMemberController::class,'index']);
+Route::post('/team-member',[TeamMemberController::class,'store']);
+Route::put('/team-member/{id}',[TeamMemberController::class,'update']);
+Route::delete('/team-member/{id}',[TeamMemberController::class,'destroy']);
