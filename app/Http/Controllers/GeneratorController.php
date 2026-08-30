@@ -155,10 +155,25 @@ class GeneratorController extends Controller
             ], 422);
         }
 
+        // ✅ FIX: on calcule le nom de DOSSIER réel (même formule exacte que
+        // FileWriterService::write()), pas le champ brut $generated['feature']
+        // (qui peut contenir des tirets, ex: "team-member", alors que le dossier
+        // réel sur le disque est "teammember" sans tiret). Sans cette cohérence,
+        // le fallback "dernière feature générée" retombe sur un nom qui ne
+        // correspond à AUCUN dossier réel, donc readExistingFiles() ne trouve
+        // aucun contexte à envoyer à Mistral, qui finit par halluciner un
+        // composant générique (exemple "xxx" du prompt système) au lieu de
+        // modifier la vraie feature existante.
+        $componentFolder = strtolower(str_replace(
+            'Component',
+            '',
+            $generated['angular']['component_name'] ?? ($generated['feature'] ?? 'unknown')
+        ));
+
         $summary = sprintf(
             'action:%s feature:%s files:%s',
             $generated['action'] ?? 'create',
-            $generated['feature'] ?? 'unknown',
+            $componentFolder,
             implode(',', array_keys($generated['angular']['files'] ?? []))
         );
 
