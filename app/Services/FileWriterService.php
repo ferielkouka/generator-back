@@ -51,6 +51,7 @@ class FileWriterService
                     $code = $this->fixAngularImports($code);
                     $code = $this->fixAngularComponent($code);
                     $code = $this->fixApiUrl($code);
+                    $code = $this->fixStorageUrl($code);
                     $code = $this->ensureEnvironmentExposed($code);
                     $code = $this->fixDuplicateApiPath($code);
                     $code = $this->fixSuccessMessage($code);
@@ -63,6 +64,7 @@ class FileWriterService
                     $code = $this->balanceBraces($code);
                 } elseif (str_ends_with($filename, '.html')) {
                     $code = $this->fixUpdateIdPatternHtml($code);
+                    $code = $this->fixStorageUrl($code);
                 } elseif (str_ends_with($filename, '.css')) {
                     $code = $this->ensureButtonStyles($code);
                 }
@@ -649,8 +651,31 @@ CSS;
     }
 
     /**
-     * GARDE-FOU: si le fichier .ts importe "environment" (import { environment } from '../../environment')
-     * mais que la classe du composant ne l'expose pas comme propriété publique, alors toute utilisation de
+     * GARDE-FOU: corrige les liens vers des fichiers stockés (PDF, images, etc.)
+     * qui utilisent par erreur "environment.apiUrl + '/storage/...'". Comme
+     * environment.apiUrl inclut déjà le suffixe '/api' (ex: '.../api'), ce pattern
+     * génère une URL '.../api/storage/xxx.pdf' qui n'existe pas côté Laravel — les
+     * fichiers stockés via Storage::disk('public') sont servis directement à la
+     * racine du domaine ('.../storage/xxx.pdf'), jamais sous '/api/storage/'. Sans
+     * ce correctif, tout lien de téléchargement de fichier uploadé renvoie un 404,
+     * peu importe si le fichier a bien été uploadé et existe sur le serveur.
+     */
+    private function fixStorageUrl(string $code): string
+    {
+        $pattern = "/environment\.apiUrl(\.replace\([^)]*\))?\s*\+\s*(['\"`])\/storage\//";
+
+        $newCode = preg_replace_callback($pattern, function ($matches) {
+            $quote = $matches[2];
+            return "environment.apiUrl.replace('/api', '') + {$quote}/storage/";
+        }, $code);
+
+        if ($newCode !== $code) {
+            \Log::warning("Correctif appliqué: URL de storage corrigée pour retirer le préfixe '/api' erroné (fichiers uploadés servis à la racine, pas sous /api).");
+        }
+
+        return $newCode;
+    }
+
      * "environment.xxx" DIRECTEMENT DANS LE TEMPLATE HTML provoque une erreur de compilation Angular
      * (TS2339: Property 'environment' does not exist on type 'XxxComponent'), car le HTML ne peut accéder
      * qu'aux propriétés de la classe, jamais aux imports bruts du fichier .ts.
