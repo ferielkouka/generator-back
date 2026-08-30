@@ -130,3 +130,7 @@ Route::get('/xxx',[XxxController::class,'index']);
 Route::post('/xxx',[XxxController::class,'store']);
 Route::put('/xxx/{id}',[XxxController::class,'update']);
 Route::delete('/xxx/{id}',[XxxController::class,'destroy']);
+Route::get('/teammember',[TeamMemberController::class,'index']);
+Route::post('/teammember',[TeamMemberController::class,'store']);
+Route::put('/teammember/{id}',[TeamMemberController::class,'update']);
+Route::delete('/teammember/{id}',[TeamMemberController::class,'destroy']);

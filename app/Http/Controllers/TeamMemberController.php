@@ -12,24 +12,14 @@ class TeamMemberController extends Controller
 
   public function store(Request $request)
   {
-    $validated = $request->validate([
-      'name' => 'required|string|min:2',
-      'role' => 'required|string|min:2',
-      'email' => 'required|email'
-    ]);
-    $item = TeamMember::create($validated);
+    $item = TeamMember::create($request->all());
     return response()->json($item, 201);
   }
 
   public function update(Request $request, $id)
   {
-    $validated = $request->validate([
-      'name' => 'required|string|min:2',
-      'role' => 'required|string|min:2',
-      'email' => 'required|email'
-    ]);
     $item = TeamMember::findOrFail($id);
-    $item->update($validated);
+    $item->update($request->all());
     return response()->json($item);
   }
 
