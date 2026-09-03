@@ -676,6 +676,9 @@ CSS;
         return $newCode;
     }
 
+    /**
+     * GARDE-FOU: si le fichier .ts importe "environment" (import { environment } from '../../environment')
+     * mais que la classe du composant ne l'expose pas comme propriété publique, alors toute utilisation de
      * "environment.xxx" DIRECTEMENT DANS LE TEMPLATE HTML provoque une erreur de compilation Angular
      * (TS2339: Property 'environment' does not exist on type 'XxxComponent'), car le HTML ne peut accéder
      * qu'aux propriétés de la classe, jamais aux imports bruts du fichier .ts.
