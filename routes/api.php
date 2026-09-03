@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\GeneratorController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\PhotoController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExamenController;
 
@@ -28,3 +29,7 @@ Route::delete('/examen/{id}', [ExamenController::class, 'destroy']);
 Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
 Route::get('/dashboard/recent-orders', [DashboardController::class, 'recentOrders']);
 Route::get('/dashboard/recent-products', [DashboardController::class, 'recentProducts']);
+Route::get('/photos',[PhotoController::class,'index']);
+Route::post('/photos',[PhotoController::class,'store']);
+Route::put('/photos/{id}',[PhotoController::class,'update']);
+Route::delete('/photos/{id}',[PhotoController::class,'destroy']);
