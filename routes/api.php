@@ -27,37 +27,6 @@ use App\Http\Controllers\BlogController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProfilController;
 
-// ⚠️ TEMPORAIRE — route de nettoyage de la base de données.
-// À VISITER UNE SEULE FOIS, PUIS À SUPPRIMER IMMÉDIATEMENT DE CE FICHIER.
-// Supprime toutes les tables créées pendant les tests, en conservant uniquement
-// les tables essentielles au fonctionnement du générateur lui-même.
-Route::get('/admin-cleanup-tables', function () {
-    $tables = \Illuminate\Support\Facades\DB::select('SHOW TABLES');
-    $dbName = \Illuminate\Support\Facades\DB::getDatabaseName();
-    $keep = [
-        'users', 'migrations', 'password_reset_tokens', 'personal_access_tokens',
-        'projects', 'conversations', 'sessions', 'cache', 'cache_locks',
-        'jobs', 'job_batches', 'failed_jobs',
-    ];
-
-    \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=0');
-    $dropped = [];
-    foreach ($tables as $t) {
-        $tableName = $t->{"Tables_in_{$dbName}"};
-        if (!in_array($tableName, $keep)) {
-            \Illuminate\Support\Facades\DB::statement("DROP TABLE IF EXISTS `{$tableName}`");
-            $dropped[] = $tableName;
-        }
-    }
-    \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=1');
-
-    return response()->json([
-        'message' => 'Tables de test supprimées avec succès.',
-        'dropped' => $dropped,
-        'kept'    => $keep,
-    ]);
-});
-
 Route::post('/generate', [GeneratorController::class, 'generate']);
 Route::get('/projects', [ProjectController::class, 'index']);
 Route::post('/projects', [ProjectController::class, 'store']);
