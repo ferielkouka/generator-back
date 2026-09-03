@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\GeneratorController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\ExamenController;
 
 Route::post('/generate', [GeneratorController::class, 'generate']);
 
@@ -19,3 +20,7 @@ Route::middleware('auth:sanctum')->group(function () {
         return auth()->user();
     });
 });
+Route::get('/examen', [ExamenController::class, 'index']);
+Route::post('/examen', [ExamenController::class, 'store']);
+Route::put('/examen/{id}', [ExamenController::class, 'update']);
+Route::delete('/examen/{id}', [ExamenController::class, 'destroy']);
