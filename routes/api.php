@@ -4,8 +4,6 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\GeneratorController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\AuthController;
-use App\Http\Controllers\ExamenController;
-use App\Http\Controllers\XxxController;
 use App\Http\Controllers\TeamMemberController;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\OffreController;
@@ -28,6 +26,37 @@ use App\Http\Controllers\ContactsController;
 use App\Http\Controllers\BlogController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProfilController;
+
+// ⚠️ TEMPORAIRE — route de nettoyage de la base de données.
+// À VISITER UNE SEULE FOIS, PUIS À SUPPRIMER IMMÉDIATEMENT DE CE FICHIER.
+// Supprime toutes les tables créées pendant les tests, en conservant uniquement
+// les tables essentielles au fonctionnement du générateur lui-même.
+Route::get('/admin-cleanup-tables', function () {
+    $tables = \Illuminate\Support\Facades\DB::select('SHOW TABLES');
+    $dbName = \Illuminate\Support\Facades\DB::getDatabaseName();
+    $keep = [
+        'users', 'migrations', 'password_reset_tokens', 'personal_access_tokens',
+        'projects', 'conversations', 'sessions', 'cache', 'cache_locks',
+        'jobs', 'job_batches', 'failed_jobs',
+    ];
+
+    \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=0');
+    $dropped = [];
+    foreach ($tables as $t) {
+        $tableName = $t->{"Tables_in_{$dbName}"};
+        if (!in_array($tableName, $keep)) {
+            \Illuminate\Support\Facades\DB::statement("DROP TABLE IF EXISTS `{$tableName}`");
+            $dropped[] = $tableName;
+        }
+    }
+    \Illuminate\Support\Facades\DB::statement('SET FOREIGN_KEY_CHECKS=1');
+
+    return response()->json([
+        'message' => 'Tables de test supprimées avec succès.',
+        'dropped' => $dropped,
+        'kept'    => $keep,
+    ]);
+});
 
 Route::post('/generate', [GeneratorController::class, 'generate']);
 Route::get('/projects', [ProjectController::class, 'index']);
@@ -127,16 +156,3 @@ Route::get('/team-member',[TeamMemberController::class,'index']);
 Route::post('/team-member',[TeamMemberController::class,'store']);
 Route::put('/team-member/{id}',[TeamMemberController::class,'update']);
 Route::delete('/team-member/{id}',[TeamMemberController::class,'destroy']);
-Route::get('/xxx',[XxxController::class,'index']);
-Route::post('/xxx',[XxxController::class,'store']);
-Route::put('/xxx/{id}',[XxxController::class,'update']);
-Route::delete('/xxx/{id}',[XxxController::class,'destroy']);
-Route::get('/teammember',[TeamMemberController::class,'index']);
-Route::post('/teammember',[TeamMemberController::class,'store']);
-Route::put('/teammember/{id}',[TeamMemberController::class,'update']);
-Route::delete('/teammember/{id}',[TeamMemberController::class,'destroy']);
-Route::get('/examen',[ExamenController::class,'index']);
-Route::post('/examen',[ExamenController::class,'store']);
-Route::put('/examen/{id}',[ExamenController::class,'update']);
-Route::delete('/examen/{id}',[ExamenController::class,'destroy']);
-Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
