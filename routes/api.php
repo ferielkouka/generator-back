@@ -139,3 +139,4 @@ Route::get('/examen',[ExamenController::class,'index']);
 Route::post('/examen',[ExamenController::class,'store']);
 Route::put('/examen/{id}',[ExamenController::class,'update']);
 Route::delete('/examen/{id}',[ExamenController::class,'destroy']);
+Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
