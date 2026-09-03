@@ -1,27 +1,22 @@
 <?php
 namespace App\Http\Controllers;
+
 use Illuminate\Http\Request;
-use App\Models\Student;
-use App\Models\Article;
-use App\Models\Contact;
+use Illuminate\Support\Facades\DB;
 
 class DashboardController extends Controller
 {
-  public function countStudents()
-  {
-    $count = Student::count();
-    return response()->json(['count' => $count], 200);
-  }
+    public function stats()
+    {
+        $stats = [
+            'totalSales' => DB::table('orders')->count(),
+            'totalRevenue' => DB::table('orders')->sum('total'),
+            'totalOrders' => DB::table('orders')->count(),
+            'totalProducts' => DB::table('products')->count(),
+            'totalCustomers' => DB::table('users')->where('role', 'customer')->count(),
+            'pendingOrders' => DB::table('orders')->where('status', 'pending')->count()
+        ];
 
-  public function countArticles()
-  {
-    $count = Article::count();
-    return response()->json(['count' => $count], 200);
-  }
-
-  public function countContacts()
-  {
-    $count = Contact::count();
-    return response()->json(['count' => $count], 200);
-  }
+        return response()->json($stats);
+    }
 }
