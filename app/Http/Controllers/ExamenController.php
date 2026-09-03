@@ -14,20 +14,20 @@ class ExamenController extends Controller
 
     public function store(Request $request)
     {
-        $validated = $request->validate([
-            'titre' => 'required|string|min:3',
-            'examen_pdf' => 'nullable|file|mimes:pdf|max:10240',
-            'correction_pdf' => 'nullable|file|mimes:pdf|max:10240'
+        $request->validate([
+            'titre' => 'required|string|max:255',
+            'file_exam_pdf' => 'nullable|file|mimes:pdf|max:2048',
+            'file_correction_pdf' => 'nullable|file|mimes:pdf|max:2048'
         ]);
 
-        $data = ['titre' => $validated['titre']];
+        $data = $request->except('file_exam_pdf', 'file_correction_pdf');
 
-        if ($request->hasFile('examen_pdf')) {
-            $data['examen_pdf'] = $request->file('examen_pdf')->store('uploads/examens', 'public');
+        if ($request->hasFile('file_exam_pdf')) {
+            $data['file_exam_pdf'] = $request->file('file_exam_pdf')->store('examens', 'public');
         }
 
-        if ($request->hasFile('correction_pdf')) {
-            $data['correction_pdf'] = $request->file('correction_pdf')->store('uploads/corrections', 'public');
+        if ($request->hasFile('file_correction_pdf')) {
+            $data['file_correction_pdf'] = $request->file('file_correction_pdf')->store('corrections', 'public');
         }
 
         $examen = Examen::create($data);
@@ -38,28 +38,29 @@ class ExamenController extends Controller
     {
         $examen = Examen::findOrFail($id);
 
-        $validated = $request->validate([
-            'titre' => 'required|string|min:3',
-            'examen_pdf' => 'nullable|file|mimes:pdf|max:10240',
-            'correction_pdf' => 'nullable|file|mimes:pdf|max:10240'
+        $request->validate([
+            'titre' => 'required|string|max:255',
+            'file_exam_pdf' => 'nullable|file|mimes:pdf|max:2048',
+            'file_correction_pdf' => 'nullable|file|mimes:pdf|max:2048'
         ]);
 
-        $examen->update(['titre' => $validated['titre']]);
+        $data = $request->except('file_exam_pdf', 'file_correction_pdf');
 
-        if ($request->hasFile('examen_pdf')) {
-            if ($examen->examen_pdf) {
-                Storage::disk('public')->delete($examen->examen_pdf);
+        if ($request->hasFile('file_exam_pdf')) {
+            if ($examen->file_exam_pdf) {
+                Storage::disk('public')->delete($examen->file_exam_pdf);
             }
-            $examen->update(['examen_pdf' => $request->file('examen_pdf')->store('uploads/examens', 'public')]);
+            $data['file_exam_pdf'] = $request->file('file_exam_pdf')->store('examens', 'public');
         }
 
-        if ($request->hasFile('correction_pdf')) {
-            if ($examen->correction_pdf) {
-                Storage::disk('public')->delete($examen->correction_pdf);
+        if ($request->hasFile('file_correction_pdf')) {
+            if ($examen->file_correction_pdf) {
+                Storage::disk('public')->delete($examen->file_correction_pdf);
             }
-            $examen->update(['correction_pdf' => $request->file('correction_pdf')->store('uploads/corrections', 'public')]);
+            $data['file_correction_pdf'] = $request->file('file_correction_pdf')->store('corrections', 'public');
         }
 
+        $examen->update($data);
         return response()->json($examen);
     }
 
@@ -67,12 +68,12 @@ class ExamenController extends Controller
     {
         $examen = Examen::findOrFail($id);
 
-        if ($examen->examen_pdf) {
-            Storage::disk('public')->delete($examen->examen_pdf);
+        if ($examen->file_exam_pdf) {
+            Storage::disk('public')->delete($examen->file_exam_pdf);
         }
 
-        if ($examen->correction_pdf) {
-            Storage::disk('public')->delete($examen->correction_pdf);
+        if ($examen->file_correction_pdf) {
+            Storage::disk('public')->delete($examen->file_correction_pdf);
         }
 
         $examen->delete();
