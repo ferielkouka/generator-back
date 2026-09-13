@@ -71,26 +71,26 @@ class GeneratorController extends Controller
                 $currentUserMessage .= "\n\nIMPORTANT: Ta réponse précédente ne contenait pas la section \"laravel\" complète (controller, model, migration, routes). Tu DOIS impérativement inclure cette section cette fois-ci, en plus du code Angular.";
             }
 
-            $mistralKey = config('services.mistral.key');
-            \Log::info('DEBUG clé Mistral - longueur: ' . strlen($mistralKey ?? '') . ', début: ' . substr($mistralKey ?? '', 0, 6) . ', fin: ' . substr($mistralKey ?? '', -4));
+            $groqKey = config('services.groq.key');
+            \Log::info('DEBUG clé Groq - longueur: ' . strlen($groqKey ?? '') . ', début: ' . substr($groqKey ?? '', 0, 6) . ', fin: ' . substr($groqKey ?? '', -4));
 
             $response = \Illuminate\Support\Facades\Http::timeout(60)->withHeaders([
-                'Authorization' => 'Bearer ' . config('services.mistral.key'),
+                'Authorization' => 'Bearer ' . $groqKey,
                 'Content-Type'  => 'application/json',
-            ])->post('https://api.mistral.ai/v1/chat/completions', [
-                'model'           => 'mistral-small-latest',
+            ])->post('https://api.groq.com/openai/v1/chat/completions', [
+                'model'           => 'openai/gpt-oss-20b',
                 'messages'        => [
                     ['role' => 'system', 'content' => $systemPrompt],
                     ['role' => 'user', 'content' => $currentUserMessage],
                 ],
-                'max_tokens'      => 8000,
+                'max_tokens'      => 3000,
                 'response_format' => ['type' => 'json_object'],
             ]);
 
-            \Log::info("Mistral response status (tentative {$attempt}): " . $response->status());
+            \Log::info("Groq response status (tentative {$attempt}): " . $response->status());
 
             if ($response->status() === 429) {
-                \Log::error("Mistral error body 429 (tentative {$attempt}): " . $response->body());
+                \Log::error("Groq error body 429 (tentative {$attempt}): " . $response->body());
 
                 if ($attempt < $maxRetries) {
                     // ✅ Retry automatique avec délai : plutôt que d'échouer
@@ -107,9 +107,9 @@ class GeneratorController extends Controller
             }
 
             if (!$response->successful()) {
-                \Log::error("Mistral error body (tentative {$attempt}): " . $response->body());
+                \Log::error("Groq error body (tentative {$attempt}): " . $response->body());
                 if ($attempt === $maxRetries) {
-                    return response()->json(['error' => 'Erreur API Mistral: ' . $response->status()], 502);
+                    return response()->json(['error' => 'Erreur API Groq: ' . $response->status()], 502);
                 }
                 continue;
             }
