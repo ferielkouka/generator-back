@@ -45,6 +45,16 @@ class FileWriterService
             $filesToCommit = [];
 
             foreach ($generated['angular']['files'] as $filename => $code) {
+                // ✅ FIX: certains modèles (notamment Groq gpt-oss-20b) double-
+                // échappent parfois les retours à la ligne dans leur réponse JSON
+                // (écrivent \\n au lieu de \n), ce qui laisse des "\n" LITTÉRAUX
+                // (backslash+n, 2 caractères) dans le code une fois json_decode()
+                // appliqué, au lieu de vrais sauts de ligne. Résultat : le fichier
+                // entier se retrouve sur une seule ligne géante, cassant
+                // complètement la syntaxe et le build Angular (TS1127, NG04...).
+                // On corrige ça en tout premier, avant tout autre traitement.
+                $code = $this->unescapeLiteralNewlines($code);
+
                 if (str_ends_with($filename, '.ts')) {
                     $code = $this->cleanAngularCode($code);
                     $code = $this->enforceComponentNameConsistency($code, $componentName, $componentFolder);
@@ -117,6 +127,7 @@ class FileWriterService
             $controllerPath = base_path($controllerRelPath);
             File::ensureDirectoryExists(dirname($controllerPath));
             $code = $generated['laravel']['controller']['code'];
+            $code = $this->unescapeLiteralNewlines($code);
             $code = $this->deduplicatePhpBlock($code);
             if (!str_starts_with(trim($code), '<?php')) {
                 $code = '<?php' . "\n\n" . $code;
@@ -194,6 +205,7 @@ class FileWriterService
                 $migrationRelPath = "database/migrations/{$timestamp}_create_{$table}_table.php";
                 $migrationPath = base_path($migrationRelPath);
                 $migCode = $generated['laravel']['migration']['code'];
+                $migCode = $this->unescapeLiteralNewlines($migCode);
                 if (!str_starts_with(trim($migCode), '<?php')) {
                     $migCode = '<?php' . "\n\n" . $migCode;
                 }
@@ -221,6 +233,30 @@ class FileWriterService
         }
 
         return $writtenFiles;
+    }
+
+    /**
+     * GARDE-FOU: corrige les "\n" LITTÉRAUX (backslash suivi de la lettre n,
+     * 2 caractères) laissés dans le code après json_decode(), causés par un
+     * double-échappement de la part du modèle (Groq notamment) dans sa réponse
+     * JSON. Sans ce correctif, le fichier entier atterrit sur une seule ligne,
+     * ce qui casse totalement la compilation (TypeScript, PHP). On ne remplace
+     * QUE le pattern littéral "\n" (backslash + n), jamais un vrai saut de
+     * ligne déjà présent (qui n'est pas affecté par ce remplacement).
+     */
+    private function unescapeLiteralNewlines(string $code): string
+    {
+        if (!str_contains($code, '\\n')) {
+            return $code;
+        }
+
+        \Log::warning("Correctif appliqué: '\\n' littéraux détectés et convertis en vrais retours à la ligne (double-échappement JSON côté modèle).");
+
+        $code = str_replace('\\r\\n', "\n", $code);
+        $code = str_replace('\\n', "\n", $code);
+        $code = str_replace('\\t', "\t", $code);
+
+        return $code;
     }
 
     private function fixArrayType(string $code): string
