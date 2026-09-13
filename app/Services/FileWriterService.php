@@ -244,17 +244,33 @@ class FileWriterService
      * QUE le pattern littéral "\n" (backslash + n), jamais un vrai saut de
      * ligne déjà présent (qui n'est pas affecté par ce remplacement).
      */
+    /**
+     * GARDE-FOU: corrige les "\n" LITTÉRAUX (backslash suivi de la lettre n,
+     * 2 caractères) ET les guillemets échappés littéraux (\", backslash +
+     * guillemet) laissés dans le code après json_decode(), causés par un
+     * double-échappement de la part du modèle (Groq notamment) dans sa réponse
+     * JSON. Sans ce correctif, le fichier entier atterrit sur une seule ligne
+     * ET/OU les attributs HTML se retrouvent avec des guillemets corrompus
+     * (ex: class=\"container\" au lieu de class="container"), ce qui casse
+     * totalement le parsing HTML (NG5002: Unexpected closing tag) ou la
+     * compilation TypeScript/PHP. On ne remplace QUE ces patterns littéraux,
+     * jamais un vrai saut de ligne ou guillemet déjà correct.
+     */
     private function unescapeLiteralNewlines(string $code): string
     {
-        if (!str_contains($code, '\\n')) {
+        $hasLiteralNewline = str_contains($code, '\\n');
+        $hasLiteralQuote = str_contains($code, '\\"');
+
+        if (!$hasLiteralNewline && !$hasLiteralQuote) {
             return $code;
         }
 
-        \Log::warning("Correctif appliqué: '\\n' littéraux détectés et convertis en vrais retours à la ligne (double-échappement JSON côté modèle).");
+        \Log::warning("Correctif appliqué: séquences échappées littérales détectées (\\n et/ou \\\") et converties en vrais caractères (double-échappement JSON côté modèle).");
 
         $code = str_replace('\\r\\n', "\n", $code);
         $code = str_replace('\\n', "\n", $code);
         $code = str_replace('\\t', "\t", $code);
+        $code = str_replace('\\"', '"', $code);
 
         return $code;
     }
@@ -952,7 +968,16 @@ CSS;
         }
 
         $routesPath = base_path('routes/api.php');
-        $existingRoutes = File::get($routesPath);
+
+        // ✅ FIX: on lit routes/api.php DEPUIS GITHUB (source de vérité), pas
+        // depuis le disque local. Le disque local peut être PÉRIMÉ si ce
+        // conteneur tourne encore sur une ancienne image (Render met 1-2 min à
+        // redéployer après chaque commit) — dans ce cas, écrire sur le disque
+        // local puis committer ce résultat écraserait sur GitHub les routes
+        // ajoutées par une génération précédente très récente, non encore
+        // reçue par CE conteneur. En repartant toujours du contenu GitHub le
+        // plus frais, on élimine cette course entre générations rapprochées.
+        $existingRoutes = $this->githubBack->getFile('routes/api.php') ?? File::get($routesPath);
 
         $cleanRoute = preg_replace("/Route::(\w+)\('\/api\//", "Route::$1('/", $newRoute);
 
