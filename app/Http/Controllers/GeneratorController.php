@@ -90,16 +90,23 @@ class GeneratorController extends Controller
             \Log::info("Groq response status (tentative {$attempt}): " . $response->status());
 
             if ($response->status() === 429) {
-                \Log::error("Groq error body 429 (tentative {$attempt}): " . $response->body());
+                $errorBody = $response->body();
+                \Log::error("Groq error body 429 (tentative {$attempt}): " . $errorBody);
 
                 if ($attempt < $maxRetries) {
-                    // ✅ Retry automatique avec délai : plutôt que d'échouer
-                    // immédiatement sur une limite de débit ponctuelle (souvent
-                    // résolue en quelques secondes), on attend puis on retente
-                    // une fois, sans que l'utilisateur ait besoin de relancer
-                    // manuellement sa demande.
-                    \Log::info("429 détecté, nouvelle tentative dans 5 secondes...");
-                    sleep(5);
+                    // ✅ Retry automatique avec délai DYNAMIQUE : Groq indique
+                    // lui-même dans son message d'erreur le temps exact à attendre
+                    // (ex: "Please try again in 6.435s"). On extrait cette valeur
+                    // au lieu d'utiliser un délai fixe arbitraire, pour attendre
+                    // ni trop peu (échec assuré) ni trop longtemps (perte de
+                    // temps inutile). On ajoute une petite marge de sécurité.
+                    $waitSeconds = 5; // valeur de secours si le message ne contient pas de délai
+                    if (preg_match('/try again in ([\d.]+)s/', $errorBody, $m)) {
+                        $waitSeconds = (float) $m[1] + 1; // +1s de marge de sécurité
+                    }
+
+                    \Log::info("429 détecté, nouvelle tentative dans {$waitSeconds}s...");
+                    usleep((int) ($waitSeconds * 1_000_000));
                     continue;
                 }
 
