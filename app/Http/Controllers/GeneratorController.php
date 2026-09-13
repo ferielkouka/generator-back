@@ -60,7 +60,7 @@ class GeneratorController extends Controller
 
         $systemPrompt = $this->getSystemPrompt();
 
-        $maxRetries = 2;
+        $maxRetries = 3;
         $generated = null;
         $rawJson = null;
 
@@ -91,6 +91,18 @@ class GeneratorController extends Controller
 
             if ($response->status() === 429) {
                 \Log::error("Mistral error body 429 (tentative {$attempt}): " . $response->body());
+
+                if ($attempt < $maxRetries) {
+                    // ✅ Retry automatique avec délai : plutôt que d'échouer
+                    // immédiatement sur une limite de débit ponctuelle (souvent
+                    // résolue en quelques secondes), on attend puis on retente
+                    // une fois, sans que l'utilisateur ait besoin de relancer
+                    // manuellement sa demande.
+                    \Log::info("429 détecté, nouvelle tentative dans 5 secondes...");
+                    sleep(5);
+                    continue;
+                }
+
                 return response()->json(['error' => 'Quota IA dépassé, réessaie dans quelques secondes.'], 429);
             }
 
