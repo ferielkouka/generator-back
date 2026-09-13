@@ -41,3 +41,6 @@ Route::post('/profile/{id}',[ProfileController::class,'update']);
 Route::delete('/profile/{id}',[ProfileController::class,'destroy']);
 Route::post('/profile/calendar',[ProfileController::class,'storeCalendar']);
 Route::delete('/fournisseurs/{id}',[FournisseurController::class,'destroy']);
+Route::get('/fournisseurs', [FournisseurController::class, 'index']);
+Route::post('/fournisseurs', [FournisseurController::class, 'store']);
+Route::put('/fournisseurs/{id}', [FournisseurController::class, 'update']);
