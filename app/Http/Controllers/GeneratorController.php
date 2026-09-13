@@ -90,6 +90,7 @@ class GeneratorController extends Controller
             \Log::info("Mistral response status (tentative {$attempt}): " . $response->status());
 
             if ($response->status() === 429) {
+                \Log::error("Mistral error body 429 (tentative {$attempt}): " . $response->body());
                 return response()->json(['error' => 'Quota IA dépassé, réessaie dans quelques secondes.'], 429);
             }
 
@@ -240,12 +241,16 @@ class GeneratorController extends Controller
         }
 
         // ✅ Si la demande ressemble clairement à une CRÉATION explicite d'une
-        // nouvelle feature ("je veux ajouter un/une X avec..."), on ne retombe
-        // JAMAIS sur la dernière feature — même sans mot-clé correspondant, il
-        // s'agit d'un nouveau projet, pas d'une modification. Sinon on récupérerait
-        // par erreur le contexte d'une feature existante non liée, recréant le bug
-        // où Mistral réutilisait/écrasait une feature au hasard.
-        $isCreationRequest = (bool) preg_match('/\bje\s+veux\s+ajouter\b/', $lowerMessage);
+        // nouvelle feature ("je veux ajouter/créer un/une X...", "je veux une
+        // page/un formulaire de X..."), on ne retombe JAMAIS sur la dernière
+        // feature — même sans mot-clé correspondant, il s'agit d'un nouveau
+        // projet, pas d'une modification. Sinon on récupérerait par erreur le
+        // contexte d'une feature existante non liée, recréant le bug où Mistral
+        // réutilisait/écrasait une feature au hasard.
+        $isCreationRequest = (bool) preg_match(
+            '/\bje\s+veux\s+(ajouter|cr[ée]er|une\s+page|un\s+formulaire|un\s+composant)\b/',
+            $lowerMessage
+        );
         if ($isCreationRequest) {
             return '';
         }
