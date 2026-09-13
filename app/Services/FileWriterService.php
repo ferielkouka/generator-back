@@ -128,6 +128,7 @@ class FileWriterService
             File::ensureDirectoryExists(dirname($controllerPath));
             $code = $generated['laravel']['controller']['code'];
             $code = $this->unescapeLiteralNewlines($code);
+            $code = $this->fixDoublePhpNamespaceBackslash($code);
             $code = $this->deduplicatePhpBlock($code);
             if (!str_starts_with(trim($code), '<?php')) {
                 $code = '<?php' . "\n\n" . $code;
@@ -206,6 +207,7 @@ class FileWriterService
                 $migrationPath = base_path($migrationRelPath);
                 $migCode = $generated['laravel']['migration']['code'];
                 $migCode = $this->unescapeLiteralNewlines($migCode);
+                $migCode = $this->fixDoublePhpNamespaceBackslash($migCode);
                 if (!str_starts_with(trim($migCode), '<?php')) {
                     $migCode = '<?php' . "\n\n" . $migCode;
                 }
@@ -273,6 +275,31 @@ class FileWriterService
         $code = str_replace('\\"', '"', $code);
 
         return $code;
+    }
+
+    /**
+     * GARDE-FOU (PHP uniquement): corrige les namespaces PHP à DOUBLE
+     * backslash (ex: "Illuminate\\Database\\Migrations\\Migration" au lieu de
+     * "Illuminate\Database\Migrations\Migration"), causés par le même bug de
+     * double-échappement JSON côté modèle que pour les \n et \". PHP utilise
+     * un seul backslash comme séparateur de namespace — un double backslash
+     * dans le code source (hors chaîne de caractères) est une erreur de
+     * syntaxe fatale ("unexpected fully qualified name"), qui empêche
+     * Laravel de démarrer DU TOUT (il charge toutes les migrations au boot),
+     * cassant ainsi TOUTES les routes de l'application, pas seulement celle
+     * concernée. On applique ce correctif uniquement au code PHP (jamais aux
+     * fichiers Angular/TS, où un double backslash peut être un pattern regex
+     * légitime).
+     */
+    private function fixDoublePhpNamespaceBackslash(string $code): string
+    {
+        if (!preg_match('/[A-Za-z]\\\\\\\\[A-Za-z]/', $code)) {
+            return $code;
+        }
+
+        \Log::warning("Correctif appliqué: namespaces PHP à double backslash détectés et corrigés en simple backslash (double-échappement JSON côté modèle).");
+
+        return preg_replace('/\\\\\\\\/', '\\\\', $code);
     }
 
     private function fixArrayType(string $code): string
