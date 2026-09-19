@@ -1,7 +1,7 @@
 <?php
-namespace App\\Http\\Controllers;
-use Illuminate\\Http\\Request;
-use App\\Models\\Fournisseur;
+namespace App\Http\Controllers;
+use Illuminate\Http\Request;
+use App\Models\Fournisseur;
 
 class FournisseurController extends Controller
 {
