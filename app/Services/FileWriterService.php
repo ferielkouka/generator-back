@@ -68,6 +68,7 @@ class FileWriterService
                     $code = $this->fixCommonModule($code);
                     $code = $this->fixArrayType($code);
                     $code = $this->fixOptionalValueArithmetic($code);
+                    $code = $this->fixNullableMultiplication($code);
                     $code = $this->fixUpdateIdPattern($code);
                     $code = $this->fixDirectUpdatePattern($code);
                     $code = $this->ensureRequiredImports($code);
@@ -380,6 +381,36 @@ class FileWriterService
         }
 
         return $newCode;
+    }
+
+    /**
+     * GARDE-FOU: corrige les erreurs TypeScript TS18047 ("possibly null") sur
+     * des multiplications entre deux propriétés d'objet (ex: après
+     * `const payload = this.form.getRawValue()`, la ligne
+     * `payload.total = payload.quantity * payload.price;` échoue à la
+     * compilation car TypeScript typage strict considère que les valeurs
+     * de FormControl peuvent être null). On protège chaque opérande avec
+     * `?? 0`, sans jamais re-protéger une expression déjà sécurisée.
+     */
+    private function fixNullableMultiplication(string $code): string
+    {
+        $pattern = '/\b(\w+(?:\.\w+)+)\s*\*\s*(\w+(?:\.\w+)+)(?!\s*\?\?)/';
+
+        $newCode = preg_replace_callback($pattern, function ($matches) {
+            $left = $matches[1];
+            $right = $matches[2];
+            // Évite de re-protéger un opérande déjà encadré par ?? juste avant (regardé via un negative lookahead sur la partie droite uniquement, donc on vérifie aussi la gauche manuellement)
+            if (str_contains($left, '??') || str_contains($right, '??')) {
+                return $matches[0];
+            }
+            return "({$left} ?? 0) * ({$right} ?? 0)";
+        }, $code);
+
+        if ($newCode !== $code) {
+            \Log::warning('Correctif appliqué: protection ?? 0 sur une multiplication entre propriétés potentiellement nullable (TS18047).');
+        }
+
+        return $newCode ?? $code;
     }
 
     /**
