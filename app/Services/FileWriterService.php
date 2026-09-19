@@ -45,13 +45,8 @@ class FileWriterService
             $filesToCommit = [];
 
             foreach ($generated['angular']['files'] as $filename => $code) {
-                // ✅ FIX: certains modèles (notamment Groq gpt-oss-20b) double-
-                // échappent parfois les retours à la ligne dans leur réponse JSON
-                // (écrivent \\n au lieu de \n), ce qui laisse des "\n" LITTÉRAUX
-                // (backslash+n, 2 caractères) dans le code une fois json_decode()
-                // appliqué, au lieu de vrais sauts de ligne. Résultat : le fichier
-                // entier se retrouve sur une seule ligne géante, cassant
-                // complètement la syntaxe et le build Angular (TS1127, NG04...).
+                // FIX: certains modèles (notamment Groq gpt-oss-20b) double-échappent
+                // parfois les retours à la ligne / guillemets dans leur réponse JSON.
                 // On corrige ça en tout premier, avant tout autre traitement.
                 $code = $this->unescapeLiteralNewlines($code);
 
@@ -79,16 +74,11 @@ class FileWriterService
                 } elseif (str_ends_with($filename, '.css')) {
                     $code = $this->ensureButtonStyles($code);
                 }
-                // ✅ FIX: force le nom de fichier RÉEL des fichiers de composant à
+
+                // FIX: force le nom de fichier RÉEL des fichiers de composant à
                 // correspondre exactement à $componentFolder (celui utilisé dans
-                // templateUrl/styleUrls/imports partout ailleurs), au lieu du nom
-                // brut choisi par Mistral dans le JSON (ex: "offre-recrutement.
-                // component.ts" avec un tiret, alors que le dossier et les imports
-                // utilisent "offrerecrutement" sans tiret). Sans ça, app.routes.ts
-                // référence un fichier qui n'existe pas sous ce nom exact -> échec
-                // de build Vercel (TS2307). On ne touche PAS aux fichiers annexes
-                // (ex: un pipe personnalisé "file-size.pipe.ts") pour ne pas les
-                // écraser par erreur avec le nom du composant.
+                // templateUrl/styleUrls/imports partout ailleurs). On ne touche PAS
+                // aux fichiers annexes (ex: "file-size.pipe.ts").
                 $normalizedFilename = $filename;
                 if (preg_match('/\.component\.(ts|html|css)$/', $filename, $extMatch)) {
                     $normalizedFilename = "{$componentFolder}.component.{$extMatch[1]}";
@@ -118,9 +108,8 @@ class FileWriterService
 
         // Accumule tous les fichiers Laravel modifiés dans cette génération, pour un
         // commit groupé unique sur le repo "back" à la fin de cette méthode. Chaque
-        // fichier est TOUJOURS écrit localement en plus (comportement inchangé), pour
-        // que le serveur en cours d'exécution en dispose immédiatement sans attendre
-        // le redéploiement déclenché par ce commit.
+        // fichier est TOUJOURS écrit localement en plus, pour que le serveur en cours
+        // d'exécution en dispose immédiatement sans attendre le redéploiement.
         $laravelFilesToCommit = [];
 
         if (isset($generated['laravel']['controller'])) {
@@ -146,16 +135,9 @@ class FileWriterService
 
         $table = $generated['database']['table'] ?? null;
         if ($table) {
-            // ✅ FIX: on utilise le nom de classe que Mistral a EXPLICITEMENT fourni
-            // dans generated.laravel.model.name (celui-là même que le controller
-            // référence via "use App\Models\Xxx;"), au lieu de le recalculer nous-
-            // mêmes depuis le nom de la table. L'ancien calcul
-            // ucfirst(rtrim($table, 's')) ne gérait que les tables en un seul mot
-            // (ex: "notes" -> "Note") et cassait dès qu'il y avait un underscore
-            // (ex: "team_members" -> "Team_member" au lieu de "TeamMember"),
-            // provoquant une erreur fatale "Class App\Models\Xxx not found" au
-            // moment de l'insertion, car le controller référence un nom de classe
-            // différent de celui du fichier réellement écrit sur le disque.
+            // FIX: on utilise le nom de classe fourni par l'IA dans
+            // generated.laravel.model.name (celui que le controller référence via
+            // "use App\Models\Xxx;"), au lieu de le recalculer depuis le nom de table.
             $modelName = $generated['laravel']['model']['name']
                 ?? Str::studly(Str::singular($table));
             $modelRelPath = "app/Models/{$modelName}.php";
@@ -165,13 +147,8 @@ class FileWriterService
             $fillable = array_filter($fields, fn($f) => !in_array($f, ['id', 'created_at', 'updated_at']));
             $fillableStr = "'" . implode("', '", $fillable) . "'";
 
-            // ✅ FIX: on écrase TOUJOURS le model avec les champs actuels (comme le
-            // controller), au lieu de ne le créer qu'une seule fois. Sinon, un vieux
-            // model existant avec un $fillable obsolète (ex: d'une génération
-            // précédente avec d'autres champs) bloque SILENCIEUSEMENT l'assignation
-            // de masse des nouveaux champs — Article::create($request->all()) ignore
-            // sans erreur tout champ absent de $fillable, ce qui crée des lignes
-            // vides sans qu'aucune erreur n'apparaisse dans les logs.
+            // FIX: on écrase TOUJOURS le model avec les champs actuels, sinon un vieux
+            // $fillable bloque SILENCIEUSEMENT l'assignation de masse des nouveaux champs.
             $modelCode  = '<?php' . PHP_EOL . PHP_EOL;
             $modelCode .= 'namespace App\Models;' . PHP_EOL . PHP_EOL;
             $modelCode .= 'use Illuminate\Database\Eloquent\Model;' . PHP_EOL . PHP_EOL;
@@ -193,8 +170,7 @@ class FileWriterService
             $existingLocal = glob(base_path("database/migrations/*_create_{$table}_table.php"));
 
             // Vérifie aussi sur le repo GitHub "back" (pas seulement le disque local),
-            // car le disque local peut avoir été réinitialisé par un redémarrage récent
-            // alors que la migration existe déjà bel et bien sur GitHub.
+            // car le disque local peut avoir été réinitialisé par un redémarrage récent.
             $existingRemote = false;
             foreach ($this->githubBack->listDirectory('database/migrations') as $item) {
                 if (($item['type'] ?? '') === 'file' && str_ends_with($item['name'] ?? '', "_create_{$table}_table.php")) {
@@ -219,10 +195,18 @@ class FileWriterService
         }
 
         if (isset($generated['laravel']['routes'])) {
-            $this->addLaravelRoute($generated['laravel']['routes']);
-            $writtenFiles[] = base_path('routes/api.php');
-            // On committe le contenu final (déjà fusionné avec l'existant par addLaravelRoute)
-            $laravelFilesToCommit['routes/api.php'] = File::get(base_path('routes/api.php'));
+            // FIX: toutes les routes de la génération sont fusionnées EN MÉMOIRE à
+            // partir d'UNE SEULE lecture de routes/api.php sur GitHub, puis le contenu
+            // final est renvoyé. Avant, chaque ligne relisait GitHub (encore à l'ancien
+            // état car le commit n'a lieu qu'à la fin) et écrasait la route précédente :
+            // seule la dernière route d'un bloc survivait (routes PUT/GET/POST manquantes).
+            // De plus, si rien de nouveau n'est ajouté, on ne committe PAS routes/api.php
+            // (avant, on committait le fichier local, potentiellement périmé).
+            $finalRoutes = $this->addLaravelRoute($generated['laravel']['routes']);
+            if ($finalRoutes !== null) {
+                $writtenFiles[] = base_path('routes/api.php');
+                $laravelFilesToCommit['routes/api.php'] = $finalRoutes;
+            }
         }
 
         $userModelChange = $this->patchUserModel();
@@ -239,58 +223,49 @@ class FileWriterService
     }
 
     /**
-     * GARDE-FOU: corrige les "\n" LITTÉRAUX (backslash suivi de la lettre n,
-     * 2 caractères) laissés dans le code après json_decode(), causés par un
-     * double-échappement de la part du modèle (Groq notamment) dans sa réponse
-     * JSON. Sans ce correctif, le fichier entier atterrit sur une seule ligne,
-     * ce qui casse totalement la compilation (TypeScript, PHP). On ne remplace
-     * QUE le pattern littéral "\n" (backslash + n), jamais un vrai saut de
-     * ligne déjà présent (qui n'est pas affecté par ce remplacement).
-     */
-    /**
-     * GARDE-FOU: corrige les "\n" LITTÉRAUX (backslash suivi de la lettre n,
-     * 2 caractères) ET les guillemets échappés littéraux (\", backslash +
-     * guillemet) laissés dans le code après json_decode(), causés par un
-     * double-échappement de la part du modèle (Groq notamment) dans sa réponse
-     * JSON. Sans ce correctif, le fichier entier atterrit sur une seule ligne
-     * ET/OU les attributs HTML se retrouvent avec des guillemets corrompus
-     * (ex: class=\"container\" au lieu de class="container"), ce qui casse
-     * totalement le parsing HTML (NG5002: Unexpected closing tag) ou la
-     * compilation TypeScript/PHP. On ne remplace QUE ces patterns littéraux,
-     * jamais un vrai saut de ligne ou guillemet déjà correct.
+     * GARDE-FOU: corrige le double-échappement JSON côté modèle (Groq notamment).
+     *
+     * Deux cas, détectés séparément pour ne pas abîmer du code légitime
+     * (ex: split('\n') ou "il a dit \"ok\"" dans une vraie chaîne) :
+     *
+     *  1. Fichier "aplati" : contient des \n littéraux mais (presque) aucun vrai
+     *     saut de ligne -> tout est converti (\r\n, \n, \t, \").
+     *  2. Attributs HTML/JS corrompus (ex: class=\"container\") alors que les vrais
+     *     sauts de ligne sont là -> seuls les \" sont convertis.
+     *
+     * Si aucun des deux cas n'est détecté, le code n'est pas modifié.
      */
     private function unescapeLiteralNewlines(string $code): string
     {
-        $hasLiteralNewline = str_contains($code, '\\n');
-        $hasLiteralQuote = str_contains($code, '\\"');
+        $literalNewlines = substr_count($code, '\\n');
+        $realNewlines = substr_count($code, "\n");
 
-        if (!$hasLiteralNewline && !$hasLiteralQuote) {
+        $isFlattened = $literalNewlines > 0 && $realNewlines <= 2;
+        $hasEscapedAttrQuotes = (bool) preg_match('/[\w-]=\\\\"/', $code);
+
+        if (!$isFlattened && !$hasEscapedAttrQuotes) {
             return $code;
         }
 
-        \Log::warning("Correctif appliqué: séquences échappées littérales détectées (\\n et/ou \\\") et converties en vrais caractères (double-échappement JSON côté modèle).");
+        if ($isFlattened) {
+            \Log::warning("Correctif appliqué: fichier aplati (\\n littéraux) détecté, conversion en vrais caractères (double-échappement JSON côté modèle).");
+            $code = str_replace('\\r\\n', "\n", $code);
+            $code = str_replace('\\n', "\n", $code);
+            $code = str_replace('\\t', "\t", $code);
+            $code = str_replace('\\"', '"', $code);
+            return $code;
+        }
 
-        $code = str_replace('\\r\\n', "\n", $code);
-        $code = str_replace('\\n', "\n", $code);
-        $code = str_replace('\\t', "\t", $code);
-        $code = str_replace('\\"', '"', $code);
-
-        return $code;
+        \Log::warning("Correctif appliqué: guillemets d'attributs échappés (\\\") détectés et convertis (double-échappement JSON côté modèle).");
+        return str_replace('\\"', '"', $code);
     }
 
     /**
-     * GARDE-FOU (PHP uniquement): corrige les namespaces PHP à DOUBLE
-     * backslash (ex: "Illuminate\\Database\\Migrations\\Migration" au lieu de
-     * "Illuminate\Database\Migrations\Migration"), causés par le même bug de
-     * double-échappement JSON côté modèle que pour les \n et \". PHP utilise
-     * un seul backslash comme séparateur de namespace — un double backslash
-     * dans le code source (hors chaîne de caractères) est une erreur de
-     * syntaxe fatale ("unexpected fully qualified name"), qui empêche
-     * Laravel de démarrer DU TOUT (il charge toutes les migrations au boot),
-     * cassant ainsi TOUTES les routes de l'application, pas seulement celle
-     * concernée. On applique ce correctif uniquement au code PHP (jamais aux
-     * fichiers Angular/TS, où un double backslash peut être un pattern regex
-     * légitime).
+     * GARDE-FOU (PHP uniquement): corrige les namespaces PHP à DOUBLE backslash
+     * (ex: "Illuminate\\Database\\Migrations\\Migration"), causés par le même bug de
+     * double-échappement JSON. Un double backslash dans un namespace est une erreur
+     * fatale qui empêche Laravel de démarrer (migrations chargées au boot).
+     * Jamais appliqué aux fichiers Angular/TS (regex légitimes possibles).
      */
     private function fixDoublePhpNamespaceBackslash(string $code): string
     {
@@ -332,14 +307,8 @@ class FileWriterService
             }
         }
 
-        // ✅ FIX: ces 3 remplacements s'appliquent TOUJOURS (plus seulement quand le
-        // nom de classe est incohérent). Le nom de fichier physique du composant est
-        // désormais toujours normalisé vers $componentFolder (voir write()), donc
-        // templateUrl/styleUrls doivent l'être aussi systématiquement — même quand
-        // Mistral avait déjà choisi le bon nom de classe, il peut avoir utilisé un
-        // nom de fichier différent (ex: avec un tiret) dans templateUrl/styleUrls,
-        // ce qui casse le build Vercel (NG2008: template file not found) si on ne
-        // corrige pas ces lignes dans ce cas-là aussi.
+        // FIX: ces 3 remplacements s'appliquent TOUJOURS, car le nom de fichier
+        // physique est toujours normalisé vers $componentFolder (voir write()).
         $code = preg_replace(
             '/templateUrl\s*:\s*[\'"]\.\/[\w.-]+\.component\.html[\'"]/',
             "templateUrl: './{$componentFolder}.component.html'",
@@ -366,10 +335,9 @@ class FileWriterService
      */
     private function fixOptionalValueArithmetic(string $code): string
     {
-        // Ne cible que les cas où le ?.value est immédiatement suivi (après espaces optionnels)
-        // d'un opérateur arithmétique (* + - /), ce qui indique un vrai calcul, pas un simple envoi de valeur.
-        // Évite les faux positifs comme formData.append('title', this.form.get('title')?.value) qui ne doit
-        // JAMAIS être encapsulé dans Number().
+        // Ne cible que les cas où le ?.value est immédiatement suivi d'un opérateur
+        // arithmétique (vrai calcul), pour éviter les faux positifs comme
+        // formData.append('title', this.form.get('title')?.value).
         $pattern = '/(?<!Number\()(\bthis\.\w+\.get\([\'"]\w+[\'"]\)\?\.value)(?=\s*[*+\-\/]\s*(?:this\.|\d))/';
 
         $newCode = preg_replace_callback($pattern, function ($matches) {
@@ -384,13 +352,10 @@ class FileWriterService
     }
 
     /**
-     * GARDE-FOU: corrige les erreurs TypeScript TS18047 ("possibly null") sur
-     * des multiplications entre deux propriétés d'objet (ex: après
-     * `const payload = this.form.getRawValue()`, la ligne
-     * `payload.total = payload.quantity * payload.price;` échoue à la
-     * compilation car TypeScript typage strict considère que les valeurs
-     * de FormControl peuvent être null). On protège chaque opérande avec
-     * `?? 0`, sans jamais re-protéger une expression déjà sécurisée.
+     * GARDE-FOU: corrige les erreurs TypeScript TS18047 ("possibly null") sur des
+     * multiplications entre deux propriétés d'objet (ex: payload.quantity * payload.price).
+     * On protège chaque opérande avec `?? 0`. On ignore les opérandes qui sont des
+     * constantes (environment.*, Math.*), inutile de les protéger.
      */
     private function fixNullableMultiplication(string $code): string
     {
@@ -399,14 +364,21 @@ class FileWriterService
         $newCode = preg_replace_callback($pattern, function ($matches) {
             $left = $matches[1];
             $right = $matches[2];
-            // Évite de re-protéger un opérande déjà encadré par ?? juste avant (regardé via un negative lookahead sur la partie droite uniquement, donc on vérifie aussi la gauche manuellement)
+
             if (str_contains($left, '??') || str_contains($right, '??')) {
                 return $matches[0];
             }
+
+            foreach ([$left, $right] as $operand) {
+                if (str_starts_with($operand, 'environment.') || str_starts_with($operand, 'Math.')) {
+                    return $matches[0];
+                }
+            }
+
             return "({$left} ?? 0) * ({$right} ?? 0)";
         }, $code);
 
-        if ($newCode !== $code) {
+        if ($newCode !== null && $newCode !== $code) {
             \Log::warning('Correctif appliqué: protection ?? 0 sur une multiplication entre propriétés potentiellement nullable (TS18047).');
         }
 
@@ -414,9 +386,8 @@ class FileWriterService
     }
 
     /**
-     * Corrige le pattern défaillant où la méthode d'édition (onUpdate/onEdit/etc.) utilise
-     * this.form.get('id').value pour récupérer l'ID, alors que le FormGroup ne contient
-     * pas de champ 'id'. Fonctionne peu importe le nom de la méthode utilisée par Groq.
+     * Corrige le pattern défaillant où la méthode d'édition utilise
+     * this.form.get('id').value alors que le FormGroup ne contient pas de champ 'id'.
      */
     private function fixUpdateIdPattern(string $code): string
     {
@@ -435,8 +406,6 @@ class FileWriterService
             );
         }
 
-        // Trouve n'importe quelle méthode (onUpdate, onEdit, editItem, etc.) qui fait patchValue(item)
-        // et lui ajoute la mémorisation de l'ID
         $code = preg_replace_callback(
             '/(on\w+|edit\w+)\(item:\s*any\)\s*\{\s*this\.form\.patchValue\(item\);\s*\}/i',
             function ($matches) {
@@ -445,12 +414,10 @@ class FileWriterService
             $code
         );
 
-        // Remplace toutes les utilisations de this.form.get('id')?.value ou .value par this.selectedId
         $code = preg_replace("/this\.form\.get\('id'\)\?\.\?value/", 'this.selectedId', $code);
         $code = preg_replace("/this\.form\.get\('id'\)\.value/", 'this.selectedId', $code);
         $code = preg_replace("/Number\(this\.selectedId\)/", 'this.selectedId', $code);
 
-        // Réinitialise selectedId après une mise à jour réussie (dans n'importe quelle méthode de submit)
         $code = preg_replace(
             '/(next:\s*\([^)]*\)\s*=>\s*\{[^}]*)(this\.form\.reset\(\);)/s',
             '$1$2' . PHP_EOL . '        this.selectedId = null;',
@@ -461,9 +428,8 @@ class FileWriterService
     }
 
     /**
-     * Corrige le pattern défaillant où le bouton "Modifier" appelle directement
-     * une méthode qui PUT l'objet cliqué tel quel (sans jamais charger le formulaire),
-     * empêchant toute vraie modification des valeurs par l'utilisateur.
+     * Corrige le pattern défaillant où le bouton "Modifier" appelle directement une
+     * méthode qui PUT l'objet cliqué tel quel (sans charger le formulaire).
      * Transforme en: onEdit() qui charge le form + onSubmit() qui POST ou PUT selon selectedId.
      */
     private function fixDirectUpdatePattern(string $code): string
@@ -482,7 +448,6 @@ class FileWriterService
         $itemVar = $m[2];
         $putUrlExpr = trim($m[3]);
 
-        // Construit l'URL de base (sans l'ID concaténé) pour la réutiliser dans onSubmit
         $baseUrlExpr = preg_replace("/\s*\+\s*" . preg_quote($itemVar, '/') . "\.id\s*$/", '', $putUrlExpr);
 
         if (!str_contains($code, 'selectedId')) {
@@ -494,7 +459,6 @@ class FileWriterService
             );
         }
 
-        // Remplace l'ancienne méthode par une version qui charge le formulaire
         $oldMethodPattern = '/' . preg_quote($methodName, '/') . '\(' . preg_quote($itemVar, '/') . ':\s*any\)\s*\{[^{}]*\{[^{}]*\}[^{}]*\}/s';
         $newMethod = "onEdit({$itemVar}: any) {\n    this.selectedId = {$itemVar}.id;\n    this.form.patchValue({$itemVar});\n  }";
         $newCode = preg_replace($oldMethodPattern, $newMethod, $code, 1);
@@ -502,7 +466,6 @@ class FileWriterService
             $code = $newCode;
         }
 
-        // Rend onSubmit() capable de POST ou PUT selon selectedId
         $code = preg_replace_callback(
             '/onSubmit\(\)\s*\{\s*this\.http\.post\(([^,]+),\s*this\.form\.value\)\.subscribe\(\{\s*next:\s*\(([^)]*)\)\s*=>\s*\{(.*?)\},\s*error:\s*\(([^)]*)\)\s*=>\s*([^}]*)\}\s*\}\);?\s*\}/s',
             function ($sm) use ($baseUrlExpr) {
@@ -533,10 +496,9 @@ class FileWriterService
     }
 
     /**
-     * Corrige le HTML : remplace la condition d'affichage du bouton "Modifier"
-     * qui se base sur form.get('id')?.value (toujours faux) par selectedId.
-     * Corrige aussi les boutons qui appellent directement onUpdate(item)/onModify(item)
-     * pour qu'ils appellent onEdit(item) à la place (cohérent avec fixDirectUpdatePattern).
+     * Corrige le HTML : remplace la condition d'affichage du bouton "Modifier" basée sur
+     * form.get('id')?.value (toujours faux) par selectedId, et redirige les boutons
+     * onUpdate(item)/onModify(item) vers onEdit(item).
      */
     private function fixUpdateIdPatternHtml(string $code): string
     {
@@ -546,7 +508,6 @@ class FileWriterService
             $code = preg_replace("/form\.get\('id'\)\.value/", 'selectedId', $code);
         }
 
-        // Si le bouton appelle onUpdate(item) ou onModify(item) directement, bascule vers onEdit(item)
         $code = preg_replace(
             '/\(click\)="on(Update|Modify)\((\w+)\)"/',
             '(click)="onEdit($2)"',
@@ -621,7 +582,7 @@ CSS;
 
     /**
      * Vérifie que tous les symboles Angular utilisés (ReactiveFormsModule, FormsModule, etc.)
-     * ont bien leur import correspondant, peu importe où ils sont référencés dans le fichier.
+     * ont bien leur import correspondant.
      */
     private function ensureRequiredImports(string $code): string
     {
@@ -737,7 +698,7 @@ CSS;
             );
         }
 
-        // Corrige aussi les URLs Railway complètes codées en dur, pour toujours passer par environment.apiUrl
+        // Corrige aussi les URLs Railway complètes codées en dur
         $code = preg_replace(
             "/['\"]https:\/\/generator-back-production\.up\.railway\.app\/api\/([^'\"]+)['\"]/",
             "environment.apiUrl + '/$1'",
@@ -761,14 +722,10 @@ CSS;
     }
 
     /**
-     * GARDE-FOU: corrige les liens vers des fichiers stockés (PDF, images, etc.)
-     * qui utilisent par erreur "environment.apiUrl + '/storage/...'". Comme
-     * environment.apiUrl inclut déjà le suffixe '/api' (ex: '.../api'), ce pattern
-     * génère une URL '.../api/storage/xxx.pdf' qui n'existe pas côté Laravel — les
-     * fichiers stockés via Storage::disk('public') sont servis directement à la
-     * racine du domaine ('.../storage/xxx.pdf'), jamais sous '/api/storage/'. Sans
-     * ce correctif, tout lien de téléchargement de fichier uploadé renvoie un 404,
-     * peu importe si le fichier a bien été uploadé et existe sur le serveur.
+     * GARDE-FOU: corrige les liens vers des fichiers stockés (PDF, images, etc.) qui
+     * utilisent par erreur "environment.apiUrl + '/storage/...'". apiUrl inclut déjà
+     * '/api', or les fichiers de Storage::disk('public') sont servis à la racine du
+     * domaine ('.../storage/xxx.pdf'), jamais sous '/api/storage/'.
      */
     private function fixStorageUrl(string $code): string
     {
@@ -787,16 +744,9 @@ CSS;
     }
 
     /**
-     * GARDE-FOU: si le fichier .ts importe "environment" (import { environment } from '../../environment')
-     * mais que la classe du composant ne l'expose pas comme propriété publique, alors toute utilisation de
-     * "environment.xxx" DIRECTEMENT DANS LE TEMPLATE HTML provoque une erreur de compilation Angular
-     * (TS2339: Property 'environment' does not exist on type 'XxxComponent'), car le HTML ne peut accéder
-     * qu'aux propriétés de la classe, jamais aux imports bruts du fichier .ts.
-     *
-     * On ajoute donc systématiquement "environment = environment;" comme première ligne de la classe
-     * dès que l'import est présent et que l'exposition ne l'est pas déjà — que le HTML l'utilise ou non,
-     * ce correctif est sans danger et évite tout crash de build sur les composants avec upload de fichiers
-     * (liens de téléchargement type environment.apiUrl + '/storage/...' dans le template).
+     * GARDE-FOU: si le fichier .ts importe "environment" mais que la classe ne l'expose
+     * pas comme propriété, toute utilisation de "environment.xxx" dans le template HTML
+     * provoque TS2339. On ajoute "environment = environment;" en début de classe.
      */
     private function ensureEnvironmentExposed(string $code): string
     {
@@ -806,7 +756,6 @@ CSS;
             return $code;
         }
 
-        // Déjà exposé sous une forme ou une autre (ex: "environment = environment;")
         if (preg_match('/^\s*environment\s*=\s*environment\s*;/m', $code)) {
             return $code;
         }
@@ -829,8 +778,8 @@ CSS;
     }
 
     /**
-     * Retire les doublons '/api/api/' causés par Groq qui ajoute parfois /api
-     * en plus de environment.apiUrl qui le contient déjà.
+     * Retire les doublons '/api/api/' causés par l'IA qui ajoute parfois /api
+     * alors que environment.apiUrl le contient déjà.
      */
     private function fixDuplicateApiPath(string $code): string
     {
@@ -838,22 +787,18 @@ CSS;
     }
 
     /**
-     * Détecte et supprime les blocs PHP dupliqués que Groq génère parfois
-     * (le même controller répété plusieurs fois d'affilée dans le code renvoyé,
-     * chaque répétition recommençant par "<?php"), ce qui casse la syntaxe PHP
-     * et provoque une erreur fatale "Cannot redeclare class Xxx".
-     * Ne garde que la première occurrence complète.
+     * Détecte et supprime les blocs PHP dupliqués que l'IA génère parfois (le même
+     * controller répété, chaque répétition recommençant par "<?php"), ce qui provoque
+     * "Cannot redeclare class Xxx". Ne garde que la première occurrence complète.
      */
     private function deduplicatePhpBlock(string $code): string
     {
-        // Compte les occurrences de "<?php" (avec ou sans namespace juste après)
         $occurrences = substr_count($code, '<?php');
 
         if ($occurrences <= 1) {
             return $code;
         }
 
-        // Coupe tout ce qui vient à partir de la 2e occurrence de "<?php"
         $firstPos = strpos($code, '<?php');
         $secondPos = strpos($code, '<?php', $firstPos + 5);
 
@@ -872,9 +817,8 @@ CSS;
     }
 
     /**
-     * Ajoute automatiquement l'import de la façade Storage si le controller
-     * l'utilise (Storage::...) sans l'avoir importé, ce qui cause une erreur fatale
-     * "Class App\Http\Controllers\Storage not found".
+     * Ajoute automatiquement l'import de la façade Storage si le controller l'utilise
+     * (Storage::...) sans l'avoir importé.
      */
     private function ensureStorageImport(string $code): string
     {
@@ -994,48 +938,57 @@ CSS;
         return $existingContent;
     }
 
-    private function addLaravelRoute(string $newRoutes): void
+    /**
+     * Fusionne les nouvelles routes Laravel dans routes/api.php.
+     *
+     * FIX (bug "routes PUT/GET/POST manquantes") : une SEULE lecture de
+     * routes/api.php sur GitHub (source de vérité, évite un disque local périmé),
+     * fusion de toutes les lignes EN MÉMOIRE, puis écriture locale unique.
+     * Retourne le contenu final à committer, ou null si rien n'a changé
+     * (auquel cas on ne committe pas routes/api.php).
+     */
+    private function addLaravelRoute(string $newRoutes): ?string
     {
-        // Convertir les \n échappés littéralement (texte brut) en vrais retours à la ligne,
-        // au cas où Groq les envoie sous cette forme au lieu de vrais sauts de ligne.
+        // Convertit les \n échappés littéralement en vrais retours à la ligne
         $newRoutes = str_replace('\\n', "\n", $newRoutes);
 
         $lines = array_filter(array_map('trim', explode("\n", $newRoutes)));
 
-        $anyAdded = false;
+        $routesPath = base_path('routes/api.php');
+        $original = $this->githubBack->getFile('routes/api.php')
+            ?? (File::exists($routesPath) ? File::get($routesPath) : '');
+        $content = $original;
+
         foreach ($lines as $line) {
-            $added = $this->addSingleLaravelRoute($line);
-            if ($added) {
-                $anyAdded = true;
-            }
+            $content = $this->appendRouteToContent($content, $line);
         }
 
-        if ($anyAdded) {
-            \Artisan::call('route:clear');
-            \Artisan::call('route:cache');
-            \Log::info('Cache des routes régénéré après ajout de ' . count($lines) . ' route(s).');
+        if ($content === $original) {
+            \Log::info('Aucune nouvelle route à ajouter (toutes déjà présentes), routes/api.php non modifié.');
+            return null;
         }
+
+        File::put($routesPath, $content);
+
+        \Artisan::call('route:clear');
+        \Artisan::call('route:cache');
+        \Log::info('Cache des routes régénéré après fusion de ' . count($lines) . ' ligne(s) de route.');
+
+        return $content;
     }
 
-    private function addSingleLaravelRoute(string $newRoute): bool
+    /**
+     * Ajoute UNE ligne de route au contenu fourni (en mémoire) et renvoie le
+     * nouveau contenu. Renvoie le contenu inchangé si la ligne est invalide ou
+     * si la route (méthode + chemin) existe déjà.
+     */
+    private function appendRouteToContent(string $existing, string $newRoute): string
     {
-        // Garde-fou supplémentaire: ignore toute ligne qui ne ressemble pas à une vraie déclaration de route
+        // Ignore toute ligne qui ne ressemble pas à une vraie déclaration de route
         if (!preg_match('/^Route::\w+\(/', trim($newRoute))) {
             \Log::warning("Ligne de route invalide ignorée: {$newRoute}");
-            return false;
+            return $existing;
         }
-
-        $routesPath = base_path('routes/api.php');
-
-        // ✅ FIX: on lit routes/api.php DEPUIS GITHUB (source de vérité), pas
-        // depuis le disque local. Le disque local peut être PÉRIMÉ si ce
-        // conteneur tourne encore sur une ancienne image (Render met 1-2 min à
-        // redéployer après chaque commit) — dans ce cas, écrire sur le disque
-        // local puis committer ce résultat écraserait sur GitHub les routes
-        // ajoutées par une génération précédente très récente, non encore
-        // reçue par CE conteneur. En repartant toujours du contenu GitHub le
-        // plus frais, on élimine cette course entre générations rapprochées.
-        $existingRoutes = $this->githubBack->getFile('routes/api.php') ?? File::get($routesPath);
 
         $cleanRoute = preg_replace("/Route::(\w+)\('\/api\//", "Route::$1('/", $newRoute);
 
@@ -1044,27 +997,24 @@ CSS;
         $routePath = $matches[2] ?? '';
 
         $routeSignature = "Route::{$httpMethod}('{$routePath}'";
-        if (!empty($routePath) && str_contains($existingRoutes, $routeSignature)) {
+        if (!empty($routePath) && str_contains($existing, $routeSignature)) {
             \Log::info("Route déjà existante, ignorée: {$cleanRoute}");
-            return false;
+            return $existing;
         }
 
         preg_match('/\[(\w+)::class/', $cleanRoute, $controllerMatches);
         $controllerName = $controllerMatches[1] ?? '';
 
-        if (!empty($controllerName) && !str_contains($existingRoutes, "use App\\Http\\Controllers\\{$controllerName}")) {
-            $existingRoutes = str_replace(
+        if (!empty($controllerName) && !str_contains($existing, "use App\\Http\\Controllers\\{$controllerName};")) {
+            $existing = str_replace(
                 "use App\\Http\\Controllers\\AuthController;",
                 "use App\\Http\\Controllers\\AuthController;" . PHP_EOL . "use App\\Http\\Controllers\\{$controllerName};",
-                $existingRoutes
+                $existing
             );
         }
 
-        $existingRoutes .= PHP_EOL . $cleanRoute;
-        File::put($routesPath, $existingRoutes);
-
         \Log::info("Route ajoutée: {$cleanRoute}");
-        return true;
+        return rtrim($existing) . PHP_EOL . $cleanRoute . PHP_EOL;
     }
 
     /**
