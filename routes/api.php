@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\GeneratorController;
 use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\FournisseurController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PhotoController;
 use App\Http\Controllers\DashboardController;
@@ -40,3 +41,5 @@ Route::post('/profile/{id}',[ProfileController::class,'update']);
 Route::delete('/profile/{id}',[ProfileController::class,'destroy']);
 Route::post('/profile/calendar',[ProfileController::class,'storeCalendar']);
 
+
+Route::delete('/fournisseurs/{id}',[FournisseurController::class,'destroy']);
