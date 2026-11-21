@@ -74,18 +74,33 @@ class GeneratorController extends Controller
             $groqKey = config('services.groq.key');
             \Log::info('DEBUG clé Groq - longueur: ' . strlen($groqKey ?? '') . ', début: ' . substr($groqKey ?? '', 0, 6) . ', fin: ' . substr($groqKey ?? '', -4));
 
-            $response = \Illuminate\Support\Facades\Http::timeout(60)->withHeaders([
-                'Authorization' => 'Bearer ' . $groqKey,
-                'Content-Type'  => 'application/json',
-            ])->post('https://api.groq.com/openai/v1/chat/completions', [
-                'model'           => 'openai/gpt-oss-20b',
-                'messages'        => [
-                    ['role' => 'system', 'content' => $systemPrompt],
-                    ['role' => 'user', 'content' => $currentUserMessage],
-                ],
-                'max_tokens'      => 5500,
-                'response_format' => ['type' => 'json_object'],
-            ]);
+            // ✅ FIX: gpt-oss est un modèle "à raisonnement" : sans limite, il
+            // peut réfléchir très longtemps avant de répondre, ce qui dépassait
+            // le délai de 60 s (la requête restait bloquée puis Render renvoyait
+            // une erreur 502). On demande un raisonnement court, on laisse plus
+            // de temps, et une coupure réseau ne fait plus planter la requête :
+            // elle passe simplement à la tentative suivante.
+            try {
+                $response = \Illuminate\Support\Facades\Http::timeout(120)->withHeaders([
+                    'Authorization' => 'Bearer ' . $groqKey,
+                    'Content-Type'  => 'application/json',
+                ])->post('https://api.groq.com/openai/v1/chat/completions', [
+                    'model'            => 'openai/gpt-oss-20b',
+                    'messages'         => [
+                        ['role' => 'system', 'content' => $systemPrompt],
+                        ['role' => 'user', 'content' => $currentUserMessage],
+                    ],
+                    'max_tokens'       => 5500,
+                    'reasoning_effort' => 'low',
+                    'response_format'  => ['type' => 'json_object'],
+                ]);
+            } catch (\Illuminate\Http\Client\ConnectionException $e) {
+                \Log::error("Groq timeout/connexion (tentative {$attempt}): " . $e->getMessage());
+                if ($attempt === $maxRetries) {
+                    return response()->json(['error' => 'L\'IA met trop de temps à répondre, réessaie dans une minute.'], 504);
+                }
+                continue;
+            }
 
             \Log::info("Groq response status (tentative {$attempt}): " . $response->status());
 
